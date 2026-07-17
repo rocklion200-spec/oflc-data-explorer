@@ -111,7 +111,7 @@ export default function App() {
           <div className="value">{stats ? fmtNum(stats.employers) : "–"}</div></div>
         <div className="tile"><div className="label">Median annual wage</div>
           <div className="value">{stats && stats.median_wage != null ? fmtUsd(stats.median_wage) : "–"}</div></div>
-        <div className="tile"><div className="label">Certified</div>
+        <div className="tile"><div className="label">{program === "pwd" ? "Determinations issued" : "Certified"}</div>
           <div className="value">{stats && stats.pct_certified != null ? `${stats.pct_certified}%` : "–"}</div></div>
       </div>
 

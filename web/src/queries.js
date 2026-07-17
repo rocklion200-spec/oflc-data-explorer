@@ -29,7 +29,8 @@ export async function fetchStats(from, where) {
     SELECT count(*)::INT AS n,
            count(DISTINCT employer_name)::INT AS employers,
            round(median(wage_annual))::INT AS median_wage,
-           round(100.0 * count(*) FILTER (case_status ILIKE 'Certified%') / nullif(count(*),0), 1) AS pct_certified
+           round(100.0 * count(*) FILTER (case_status ILIKE 'Certified%'
+                 OR case_status ILIKE 'Determination Issued%') / nullif(count(*),0), 1) AS pct_certified
     FROM ${from} ${where}`);
   return r;
 }
