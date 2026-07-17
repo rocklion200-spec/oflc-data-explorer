@@ -5,115 +5,115 @@
         "fy": 2008,
         "file": "lca_fy2008.parquet",
         "rows": 405641,
-        "bytes": 14167707
+        "bytes": 14169869
       },
       {
         "fy": 2009,
         "file": "lca_fy2009.parquet",
         "rows": 343783,
-        "bytes": 12592245
+        "bytes": 12567314
       },
       {
         "fy": 2010,
         "file": "lca_fy2010.parquet",
         "rows": 332910,
-        "bytes": 13286842
+        "bytes": 13276491
       },
       {
         "fy": 2011,
         "file": "lca_fy2011.parquet",
         "rows": 337821,
-        "bytes": 13401683
+        "bytes": 13391300
       },
       {
         "fy": 2012,
         "file": "lca_fy2012.parquet",
         "rows": 392949,
-        "bytes": 15457746
+        "bytes": 15466065
       },
       {
         "fy": 2013,
         "file": "lca_fy2013.parquet",
         "rows": 419023,
-        "bytes": 15813791
+        "bytes": 15819636
       },
       {
         "fy": 2014,
         "file": "lca_fy2014.parquet",
         "rows": 493535,
-        "bytes": 18197737
+        "bytes": 18200397
       },
       {
         "fy": 2015,
         "file": "lca_fy2015.parquet",
         "rows": 590568,
-        "bytes": 18567227
+        "bytes": 18523524
       },
       {
         "fy": 2016,
         "file": "lca_fy2016.parquet",
         "rows": 617232,
-        "bytes": 23780798
+        "bytes": 23780092
       },
       {
         "fy": 2017,
         "file": "lca_fy2017.parquet",
         "rows": 601521,
-        "bytes": 24240031
+        "bytes": 24207081
       },
       {
         "fy": 2018,
         "file": "lca_fy2018.parquet",
         "rows": 638433,
-        "bytes": 26121526
+        "bytes": 26151506
       },
       {
         "fy": 2019,
         "file": "lca_fy2019.parquet",
         "rows": 660540,
-        "bytes": 27616315
+        "bytes": 32730999
       },
       {
         "fy": 2020,
         "file": "lca_fy2020.parquet",
         "rows": 557606,
-        "bytes": 22814429
+        "bytes": 27328464
       },
       {
         "fy": 2021,
         "file": "lca_fy2021.parquet",
         "rows": 503240,
-        "bytes": 21204405
+        "bytes": 25498758
       },
       {
         "fy": 2022,
         "file": "lca_fy2022.parquet",
         "rows": 601019,
-        "bytes": 24710572
+        "bytes": 29803857
       },
       {
         "fy": 2023,
         "file": "lca_fy2023.parquet",
         "rows": 525838,
-        "bytes": 22097400
+        "bytes": 26634996
       },
       {
         "fy": 2024,
         "file": "lca_fy2024.parquet",
         "rows": 548146,
-        "bytes": 23244278
+        "bytes": 27863105
       },
       {
         "fy": 2025,
         "file": "lca_fy2025.parquet",
         "rows": 588591,
-        "bytes": 25022383
+        "bytes": 30002045
       },
       {
         "fy": 2026,
         "file": "lca_fy2026.parquet",
         "rows": 210363,
-        "bytes": 8811354
+        "bytes": 10556070
       }
     ],
     "perm": [
@@ -121,115 +121,115 @@
         "fy": 2008,
         "file": "perm_fy2008.parquet",
         "rows": 61362,
-        "bytes": 2309138
+        "bytes": 2310852
       },
       {
         "fy": 2009,
         "file": "perm_fy2009.parquet",
         "rows": 37960,
-        "bytes": 1497684
+        "bytes": 1496197
       },
       {
         "fy": 2010,
         "file": "perm_fy2010.parquet",
         "rows": 80877,
-        "bytes": 3093394
+        "bytes": 3089644
       },
       {
         "fy": 2011,
         "file": "perm_fy2011.parquet",
         "rows": 72897,
-        "bytes": 2644681
+        "bytes": 2652798
       },
       {
         "fy": 2012,
         "file": "perm_fy2012.parquet",
         "rows": 65559,
-        "bytes": 2308352
+        "bytes": 2304108
       },
       {
         "fy": 2013,
         "file": "perm_fy2013.parquet",
         "rows": 43802,
-        "bytes": 1531295
+        "bytes": 1532102
       },
       {
         "fy": 2014,
         "file": "perm_fy2014.parquet",
         "rows": 70522,
-        "bytes": 2350732
+        "bytes": 2343375
       },
       {
         "fy": 2015,
         "file": "perm_fy2015.parquet",
         "rows": 88556,
-        "bytes": 3554772
+        "bytes": 3571629
       },
       {
         "fy": 2016,
         "file": "perm_fy2016.parquet",
         "rows": 125731,
-        "bytes": 5094455
+        "bytes": 5081272
       },
       {
         "fy": 2017,
         "file": "perm_fy2017.parquet",
         "rows": 97015,
-        "bytes": 3979229
+        "bytes": 3992083
       },
       {
         "fy": 2018,
         "file": "perm_fy2018.parquet",
         "rows": 119484,
-        "bytes": 4907271
+        "bytes": 4910038
       },
       {
         "fy": 2019,
         "file": "perm_fy2019.parquet",
         "rows": 102521,
-        "bytes": 4185322
+        "bytes": 4184861
       },
       {
         "fy": 2020,
         "file": "perm_fy2020.parquet",
         "rows": 93691,
-        "bytes": 3921290
+        "bytes": 4630483
       },
       {
         "fy": 2021,
         "file": "perm_fy2021.parquet",
         "rows": 108349,
-        "bytes": 4456092
+        "bytes": 5269538
       },
       {
         "fy": 2022,
         "file": "perm_fy2022.parquet",
         "rows": 104440,
-        "bytes": 4256282
+        "bytes": 5007695
       },
       {
         "fy": 2023,
         "file": "perm_fy2023.parquet",
         "rows": 116155,
-        "bytes": 4646014
+        "bytes": 5445737
       },
       {
         "fy": 2024,
         "file": "perm_fy2024.parquet",
         "rows": 114460,
-        "bytes": 4630395
+        "bytes": 5437503
       },
       {
         "fy": 2025,
         "file": "perm_fy2025.parquet",
         "rows": 147055,
-        "bytes": 5509863
+        "bytes": 6575136
       },
       {
         "fy": 2026,
         "file": "perm_fy2026.parquet",
         "rows": 60096,
-        "bytes": 2404701
+        "bytes": 2857739
       }
     ],
     "pwd": [
@@ -237,103 +237,103 @@
         "fy": 2010,
         "file": "pwd_fy2010.parquet",
         "rows": 67295,
-        "bytes": 3178670
+        "bytes": 3177606
       },
       {
         "fy": 2011,
         "file": "pwd_fy2011.parquet",
         "rows": 95023,
-        "bytes": 4235773
+        "bytes": 4245482
       },
       {
         "fy": 2012,
         "file": "pwd_fy2012.parquet",
         "rows": 136062,
-        "bytes": 6045324
+        "bytes": 6045000
       },
       {
         "fy": 2013,
         "file": "pwd_fy2013.parquet",
         "rows": 117600,
-        "bytes": 4912347
+        "bytes": 4919584
       },
       {
         "fy": 2014,
         "file": "pwd_fy2014.parquet",
         "rows": 126086,
-        "bytes": 5477758
+        "bytes": 5472013
       },
       {
         "fy": 2015,
         "file": "pwd_fy2015.parquet",
         "rows": 139267,
-        "bytes": 6081920
+        "bytes": 7240318
       },
       {
         "fy": 2016,
         "file": "pwd_fy2016.parquet",
         "rows": 141070,
-        "bytes": 6194771
+        "bytes": 6187998
       },
       {
         "fy": 2017,
         "file": "pwd_fy2017.parquet",
         "rows": 182550,
-        "bytes": 8012049
+        "bytes": 8026656
       },
       {
         "fy": 2018,
         "file": "pwd_fy2018.parquet",
         "rows": 149361,
-        "bytes": 6613444
+        "bytes": 6618035
       },
       {
         "fy": 2019,
         "file": "pwd_fy2019.parquet",
         "rows": 169577,
-        "bytes": 7450377
+        "bytes": 7462703
       },
       {
         "fy": 2020,
         "file": "pwd_fy2020.parquet",
         "rows": 166468,
-        "bytes": 7134674
+        "bytes": 8543613
       },
       {
         "fy": 2021,
         "file": "pwd_fy2021.parquet",
         "rows": 160372,
-        "bytes": 6800698
+        "bytes": 8127792
       },
       {
         "fy": 2022,
         "file": "pwd_fy2022.parquet",
         "rows": 187607,
-        "bytes": 7729201
+        "bytes": 9290184
       },
       {
         "fy": 2023,
         "file": "pwd_fy2023.parquet",
         "rows": 254325,
-        "bytes": 10292094
+        "bytes": 12406748
       },
       {
         "fy": 2024,
         "file": "pwd_fy2024.parquet",
         "rows": 237610,
-        "bytes": 9550564
+        "bytes": 11522889
       },
       {
         "fy": 2025,
         "file": "pwd_fy2025.parquet",
         "rows": 249188,
-        "bytes": 10259602
+        "bytes": 12278805
       },
       {
         "fy": 2026,
         "file": "pwd_fy2026.parquet",
         "rows": 97868,
-        "bytes": 4104810
+        "bytes": 4889595
       }
     ]
   }

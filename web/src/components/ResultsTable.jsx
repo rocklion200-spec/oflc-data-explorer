@@ -5,6 +5,7 @@ import { fmtUsd } from "./charts.jsx";
 const LABELS = {
   employer_name: "Employer name", soc_title: "SOC title", job_title: "Job title",
   worksite_city: "Worksite city", worksite_state: "State",
+  worksite_address: "Worksite address",
   wage_annual: "Wage (annual)", pw_annual: "Prevailing (annual)",
   received_date: "Received", begin_date: "Begin date", wage_to: "Wage to",
   total_workers: "Positions", decision_date: "Decision date",
@@ -19,9 +20,9 @@ const LABELS = {
 
 const DEFAULT_VISIBLE = {
   lca: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
-    "wage_annual", "pw_annual", "received_date", "begin_date", "wage_to",
-    "total_workers", "decision_date", "case_status", "case_number", "visa_class",
-    "soc_code"],
+    "worksite_address", "wage_annual", "pw_annual", "received_date", "begin_date",
+    "wage_to", "total_workers", "decision_date", "case_status", "case_number",
+    "visa_class", "soc_code"],
   perm: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
     "wage_annual", "wage_to", "pw_annual", "received_date", "decision_date",
     "case_status", "case_number", "soc_code"],

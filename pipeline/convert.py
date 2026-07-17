@@ -11,7 +11,8 @@ The unified core schema lets one web UI serve LCA, PERM and PWD:
   program, case_number, case_status, received_date, decision_date,
   visa_class, employer_name, employer_city, employer_state,
   employer_postal_code, naics_code, job_title, soc_code, soc_title,
-  worksite_city, worksite_county, worksite_state, worksite_postal_code,
+  worksite_address, worksite_city, worksite_county, worksite_state,
+  worksite_postal_code,
   wage_from, wage_to, wage_unit, wage_annual, pw_wage, pw_unit, pw_annual,
   pw_wage_level, full_time_position, begin_date, end_date, total_workers,
   fiscal_year
@@ -72,6 +73,12 @@ def n(col: str) -> str:
     return f"try_cast(replace(replace({col}, ',', ''), '$', '') AS DOUBLE)"
 
 
+def addr(*cols: str) -> str:
+    """Join street-address line columns, dropping blank lines."""
+    parts = ", ".join(f"nullif(trim({c}), '')" for c in cols)
+    return f"nullif(concat_ws(', ', {parts}), '')"
+
+
 def norm_status(expr: str) -> str:
     """Normalize case-status casing across eras (legacy files are UPPERCASE)."""
     return f"""(CASE upper(trim({expr}))
@@ -129,6 +136,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "SOC_CODE",
         "soc_title": "SOC_TITLE",
+        "worksite_address": [addr("WORKSITE_ADDRESS1", "WORKSITE_ADDRESS2"),
+                             addr("WORKSITE_ADDRESS1")],
         "worksite_city": "WORKSITE_CITY",
         "worksite_county": "WORKSITE_COUNTY",
         "worksite_state": st("WORKSITE_STATE"),
@@ -160,6 +169,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "PWD_SOC_CODE",
         "soc_title": "PWD_SOC_TITLE",
+        "worksite_address": [addr("PRIMARY_WORKSITE_ADDR1", "PRIMARY_WORKSITE_ADDR2"),
+                             addr("PRIMARY_WORKSITE_ADDR1")],
         "worksite_city": "PRIMARY_WORKSITE_CITY",
         "worksite_county": "PRIMARY_WORKSITE_COUNTY",
         "worksite_state": st("PRIMARY_WORKSITE_STATE"),
@@ -184,6 +195,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "PW_SOC_CODE",
         "soc_title": "PW_SOC_TITLE",
+        "worksite_address": [addr("WORKSITE_ADDRESS_1", "WORKSITE_ADDRESS_2"),
+                             addr("WORKSITE_ADDRESS_1")],
         "worksite_city": "WORKSITE_CITY",
         "worksite_state": st("WORKSITE_STATE"),
         "worksite_postal_code": "WORKSITE_POSTAL_CODE",
@@ -210,6 +223,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "PWD_SOC_CODE",
         "soc_title": "PWD_SOC_TITLE",
+        "worksite_address": [addr("PRIMARY_WORKSITE_ADDRESS_1", "PRIMARY_WORKSITE_ADDRESS_2"),
+                             addr("PRIMARY_WORKSITE_ADDRESS_1")],
         "worksite_city": "PRIMARY_WORKSITE_CITY",
         "worksite_county": "PRIMARY_WORKSITE_COUNTY",
         "worksite_state": st("PRIMARY_WORKSITE_STATE"),
@@ -237,6 +252,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "SOC_CODE",
         "soc_title": "SOC_TITLE",
+        "worksite_address": [addr("WORKSITE_ADDRESS1_1", "WORKSITE_ADDRESS2_1"),
+                             addr("WORKSITE_ADDRESS1_1")],
         "worksite_city": "WORKSITE_CITY_1",
         "worksite_county": "WORKSITE_COUNTY_1",
         "worksite_state": st("WORKSITE_STATE_1"),
@@ -448,6 +465,8 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "job_title": "JOB_TITLE",
         "soc_code": "SOC_CODE",
         "soc_title": "SOC_CODE_NAME",
+        "worksite_address": [addr("WORKSITE_ADDRESS_1", "WORKSITE_ADDRESS_2"),
+                             addr("WORKSITE_ADDRESS_1")],
         "worksite_city": "WORKSITE_CITY",
         "worksite_county": "WORKSITE_COUNTY",
         "worksite_state": st("WORKSITE_STATE"),
@@ -496,8 +515,8 @@ CORE_COLUMNS = [
     "case_number", "case_status", "received_date", "decision_date",
     "visa_class", "employer_name", "employer_city", "employer_state",
     "employer_postal_code", "naics_code", "job_title", "soc_code",
-    "soc_title", "worksite_city", "worksite_county", "worksite_state",
-    "worksite_postal_code", "wage_from", "wage_to", "wage_unit",
+    "soc_title", "worksite_address", "worksite_city", "worksite_county",
+    "worksite_state", "worksite_postal_code", "wage_from", "wage_to", "wage_unit",
     "wage_annual", "pw_wage", "pw_unit", "pw_annual", "pw_wage_level",
     "full_time_position", "begin_date", "end_date", "total_workers",
 ]
