@@ -1,33 +1,170 @@
+import { useEffect, useRef, useState } from "react";
+import { COLUMN_TYPES } from "../queries.js";
 import { fmtUsd } from "./charts.jsx";
 
-const COLS = [
-  ["decision_date", "Decision date", false],
-  ["case_status", "Status", false],
-  ["employer_name", "Employer", false],
-  ["job_title", "Job title", false],
-  ["soc_code", "SOC", false],
-  ["worksite_city", "Worksite city", false],
-  ["worksite_state", "State", false],
-  ["wage_annual", "Wage (annual)", true],
-  ["pw_annual", "Prevailing (annual)", true],
-  ["visa_class", "Visa", false],
-  ["case_number", "Case number", false],
-];
+const LABELS = {
+  employer_name: "Employer name", soc_title: "SOC title", job_title: "Job title",
+  worksite_city: "Worksite city", worksite_state: "State",
+  wage_annual: "Wage (annual)", pw_annual: "Prevailing (annual)",
+  received_date: "Received", begin_date: "Begin date", wage_to: "Wage to",
+  total_workers: "Positions", decision_date: "Decision date",
+  case_status: "Status", case_number: "Case number", visa_class: "Visa class",
+  soc_code: "SOC code", employer_city: "Employer city",
+  employer_state: "Employer state", naics_code: "NAICS",
+  worksite_county: "Worksite county", worksite_postal_code: "Worksite ZIP",
+  wage_from: "Wage from", wage_unit: "Wage unit", pw_wage: "Prevailing (raw)",
+  pw_wage_level: "PW level", full_time_position: "Full-time",
+  end_date: "End date", fiscal_year: "Fiscal year",
+};
 
-export function ResultsTable({ rows, total, page, pageSize, onPage, sort, onSort }) {
+const DEFAULT_VISIBLE = {
+  lca: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
+    "wage_annual", "pw_annual", "received_date", "begin_date", "wage_to",
+    "total_workers", "decision_date", "case_status", "case_number", "visa_class",
+    "soc_code"],
+  perm: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
+    "wage_annual", "wage_to", "pw_annual", "received_date", "decision_date",
+    "case_status", "case_number", "soc_code"],
+  pwd: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
+    "pw_annual", "pw_wage_level", "received_date", "decision_date", "case_status",
+    "case_number", "visa_class", "soc_code"],
+};
+
+const USD_COLS = new Set(["wage_annual", "wage_from", "wage_to", "pw_annual", "pw_wage"]);
+const isNum = (c) => COLUMN_TYPES[c] === "num";
+
+const storageKey = (program) => `oflc-columns-${program}`;
+
+export function loadColumns(program) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey(program)));
+    if (Array.isArray(saved) && saved.length && saved.every((c) => c in LABELS)) return saved;
+  } catch { /* fall through to defaults */ }
+  return DEFAULT_VISIBLE[program] || DEFAULT_VISIBLE.lca;
+}
+
+function saveColumns(program, cols) {
+  try { localStorage.setItem(storageKey(program), JSON.stringify(cols)); } catch { /* ignore */ }
+}
+
+const FILTER_HINT = {
+  text: "contains…",
+  num: "e.g. >150k",
+  date: "e.g. 2025-03 or >=2024",
+};
+
+function ColumnManager({ program, columns, onColumns, onClose }) {
+  const hidden = Object.keys(LABELS).filter((c) => !columns.includes(c));
+  const dragFrom = useRef(null);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [onClose]);
+  const move = (from, to) => {
+    const next = [...columns];
+    next.splice(to, 0, ...next.splice(from, 1));
+    onColumns(next);
+  };
+  return (
+    <div className="col-manager" ref={ref}>
+      <div className="col-manager-head">
+        <span>Shown (drag to reorder)</span>
+        <button className="linkish" onClick={() => onColumns(DEFAULT_VISIBLE[program] || DEFAULT_VISIBLE.lca)}>
+          Reset
+        </button>
+      </div>
+      <ul>
+        {columns.map((c, i) => (
+          <li key={c} draggable
+            onDragStart={() => { dragFrom.current = i; }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => { if (dragFrom.current != null) move(dragFrom.current, i); dragFrom.current = null; }}>
+            <span className="grip">⋮⋮</span>
+            <label>
+              <input type="checkbox" checked readOnly
+                onClick={() => columns.length > 1 && onColumns(columns.filter((x) => x !== c))} />
+              {LABELS[c]}
+            </label>
+          </li>
+        ))}
+      </ul>
+      {hidden.length > 0 && <div className="col-manager-head"><span>Hidden</span></div>}
+      <ul>
+        {hidden.map((c) => (
+          <li key={c}>
+            <span className="grip" style={{ visibility: "hidden" }}>⋮⋮</span>
+            <label>
+              <input type="checkbox" checked={false} readOnly
+                onClick={() => onColumns([...columns, c])} />
+              {LABELS[c]}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function ResultsTable({ program, rows, total, page, pageSize, onPage, sort, onSort,
+  columns, onColumns, colFilters, onColFilters }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
+  const [managing, setManaging] = useState(false);
+  const dragCol = useRef(null);
+
+  const setColumns = (next) => { saveColumns(program, next); onColumns(next); };
+  const setFilter = (col, v) => {
+    const next = { ...colFilters };
+    if (v) next[col] = v; else delete next[col];
+    onColFilters(next);
+  };
+  const hasFilters = Object.keys(colFilters).length > 0;
+
   return (
     <div className="panel">
-      <h2>Records</h2>
+      <div className="panel-head">
+        <h2>Records</h2>
+        <div className="panel-tools">
+          {hasFilters && (
+            <button className="linkish" onClick={() => onColFilters({})}>Clear column filters</button>
+          )}
+          <button className="tool-btn" onClick={() => setManaging((m) => !m)}>Columns ▾</button>
+          {managing && (
+            <ColumnManager program={program} columns={columns}
+              onColumns={setColumns} onClose={() => setManaging(false)} />
+          )}
+        </div>
+      </div>
       <div className="table-wrap">
         <table className="results">
           <thead>
             <tr>
-              {COLS.map(([key, label, num]) => (
-                <th key={key} className={num ? "num" : ""}
+              {columns.map((key) => (
+                <th key={key} className={isNum(key) ? "num" : ""} draggable
+                  onDragStart={() => { dragCol.current = key; }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    const from = columns.indexOf(dragCol.current), to = columns.indexOf(key);
+                    if (from >= 0 && to >= 0 && from !== to) {
+                      const next = [...columns];
+                      next.splice(to, 0, ...next.splice(from, 1));
+                      setColumns(next);
+                    }
+                    dragCol.current = null;
+                  }}
                   onClick={() => onSort({ col: key, dir: sort.col === key && sort.dir === "desc" ? "asc" : "desc" })}
-                  title="Click to sort">
-                  {label}{sort.col === key ? (sort.dir === "desc" ? " ↓" : " ↑") : ""}
+                  title="Click to sort · drag to reorder">
+                  {LABELS[key]}{sort.col === key ? (sort.dir === "desc" ? " ↓" : " ↑") : ""}
+                </th>
+              ))}
+            </tr>
+            <tr className="col-filter-row">
+              {columns.map((key) => (
+                <th key={key}>
+                  <input type="search" value={colFilters[key] || ""}
+                    placeholder={FILTER_HINT[COLUMN_TYPES[key]] || "filter…"}
+                    onChange={(e) => setFilter(key, e.target.value)} />
                 </th>
               ))}
             </tr>
@@ -35,15 +172,15 @@ export function ResultsTable({ rows, total, page, pageSize, onPage, sort, onSort
           <tbody>
             {rows.map((r) => (
               <tr key={r.case_number + r.decision_date}>
-                {COLS.map(([key, , num]) => (
-                  <td key={key} className={num ? "num" : ""} title={r[key] ?? ""}>
-                    {num ? fmtUsd(r[key]) : r[key] ?? "–"}
+                {columns.map((key) => (
+                  <td key={key} className={isNum(key) ? "num" : ""} title={r[key] ?? ""}>
+                    {USD_COLS.has(key) ? fmtUsd(r[key]) : r[key] ?? "–"}
                   </td>
                 ))}
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={COLS.length} style={{ color: "var(--text-muted)" }}>No matching records.</td></tr>
+              <tr><td colSpan={columns.length} style={{ color: "var(--text-muted)" }}>No matching records.</td></tr>
             )}
           </tbody>
         </table>
