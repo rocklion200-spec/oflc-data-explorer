@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 PERF_URL = "https://www.dol.gov/agencies/eta/foreign-labor/performance"
@@ -23,14 +24,37 @@ RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 # dol.gov returns 403 to python-urllib; curl works fine.
 CURL = ["curl", "-sL", "--fail", "--retry", "3"]
 
-# Patterns for the modern-era disclosure files we support (FY2020+).
-# Older eras (different schemas) can be added as (pattern, program, era) rows.
-PATTERNS = [
-    # program, era, regex on the URL basename
-    ("lca",  "flag", re.compile(r"LCA_Disl?closure_Data_FY(\d{4})(?:_Q(\d))?\.xlsx$", re.I)),
-    ("perm", "flag", re.compile(r"PERM_Disclosure_Data(?:_New_Form)?_FY(\d{4})(?:_Q(\d))?\.xlsx$", re.I)),
-    ("pwd",  "flag", re.compile(r"PWD?_Disclosure_Data_FY(\d{4})(?:_Q(\d))?(?:_(?:old|revised|new)_form)?\.xlsx$", re.I)),
+# Filename rules covering every era of LCA/PERM/PW disclosure files back to
+# FY2008. Excludes Appendix A / Worksites companion files. FY may be 2-digit.
+FILE_RULES = [
+    ("lca",  r"LCA_Disl?closure_Data_FY(\d{2,4})(?:_Q(\d))?"),
+    ("lca",  r"H-1B_Disclosure_Data_FY(\d{2,4})(?:_Q(\d))?(?:_EOY)?"),
+    ("lca",  r"H-1B_iCert_LCA_FY(\d{2,4})(?:_Q(\d))?"),
+    ("lca",  r"Icert_?\s?LCA_?\s?FY(\d{2,4})"),
+    ("lca",  r"LCA_FY(\d{2,4})(?:_Q(\d))?"),
+    ("lca",  r"H-1B_FY(\d{2,4})(?:_Q(\d))?"),
+    ("lca",  r"H-1B_Case_Data_FY(\d{2,4})"),
+    ("perm", r"PERM_Disclosure_Data(?:_New_Form)?_FY(\d{2,4})(?:_Q(\d))?(?:_EOY)?"),
+    ("perm", r"PERM_FY(\d{2,4})(?:_Q(\d))?"),
+    ("pwd",  r"PWD?_Disclosure_Data_FY(\d{2,4})(?:_Q(\d))?(?:_EOY)?(?:_(?:old|revised|new)_form)?"),
+    ("pwd",  r"PW_Case_Data_FY(\d{2,4})"),
+    ("pwd",  r"PW_FY(\d{2,4})"),
 ]
+FILE_RULES = [(p, re.compile(rx + r"\.xlsx$", re.I)) for p, rx in FILE_RULES]
+
+
+def identify(basename: str):
+    """(program, fy, quarter) for a disclosure filename, else None."""
+    for program, pat in FILE_RULES:
+        m = pat.fullmatch(basename)
+        if not m:
+            continue
+        fy = int(m.group(1))
+        if fy < 100:
+            fy += 2000
+        q = m.group(2) if m.re.groups > 1 else None
+        return program, fy, int(q) if q else None
+    return None
 
 
 def scrape_links() -> list[str]:
@@ -48,24 +72,21 @@ def scrape_links() -> list[str]:
 def build_manifest(min_fy: int, programs: set[str]) -> list[dict]:
     entries = []
     for url in scrape_links():
-        name = url.rsplit("/", 1)[-1]
-        for program, era, pat in PATTERNS:
-            m = pat.search(name)
-            if not m:
-                continue
-            fy = int(m.group(1))
-            if fy < min_fy or fy < 2020 or program not in programs:
-                continue
-            entries.append({
-                "program": program,
-                "era": era,
-                "fy": fy,
-                "quarter": int(m.group(2)) if m.group(2) else None,
-                "url": url,
-                # normalize the DOL typo ("Dislclosure") in the local filename
-                "file": name.replace("Dislclosure", "Disclosure"),
-            })
-            break
+        name = urllib.parse.unquote(url.rsplit("/", 1)[-1])
+        ident = identify(name)
+        if not ident:
+            continue
+        program, fy, quarter = ident
+        if fy < min_fy or program not in programs:
+            continue
+        entries.append({
+            "program": program,
+            "fy": fy,
+            "quarter": quarter,
+            "url": url,
+            # normalize the DOL typo ("Dislclosure") and stray spaces
+            "file": name.replace("Dislclosure", "Disclosure").replace(" ", ""),
+        })
     # newest first
     entries.sort(key=lambda e: (e["fy"], e["quarter"] or 9), reverse=True)
     return entries
@@ -80,7 +101,8 @@ def download(entries: list[dict]) -> None:
             continue
         print(f"downloading    {e['file']} ...", flush=True)
         tmp = dest.with_suffix(".part")
-        subprocess.run(CURL + ["-o", str(tmp), e["url"]], check=True)
+        url = urllib.parse.quote(e["url"], safe=":/%")  # some old links contain spaces
+        subprocess.run(CURL + ["-o", str(tmp), url], check=True)
         tmp.rename(dest)
         print(f"done           {e['file']} ({dest.stat().st_size/1e6:.0f} MB)")
 

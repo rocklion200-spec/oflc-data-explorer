@@ -28,15 +28,12 @@ from pathlib import Path
 
 import duckdb
 
+from download import identify
+
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 STAGE = ROOT / "data" / "stage"
 WEB_DATA = ROOT / "web" / "public" / "data"
-
-FILE_PAT = re.compile(
-    r"^(LCA|PERM|PW|PWD)_Disclosure_Data(?:_New_Form)?_FY(\d{4})"
-    r"(?:_Q(\d))?(?:_(?:old|revised|new)_form)?\.xlsx$", re.I)
-PROGRAM_OF = {"LCA": "lca", "PERM": "perm", "PW": "pwd", "PWD": "pwd"}
 
 
 STATES = {
@@ -72,7 +69,21 @@ def d(col: str) -> str:
 
 
 def n(col: str) -> str:
-    return f"try_cast(replace({col}, ',', '') AS DOUBLE)"
+    return f"try_cast(replace(replace({col}, ',', ''), '$', '') AS DOUBLE)"
+
+
+def norm_status(expr: str) -> str:
+    """Normalize case-status casing across eras (legacy files are UPPERCASE)."""
+    return f"""(CASE upper(trim({expr}))
+        WHEN 'CERTIFIED' THEN 'Certified'
+        WHEN 'CERTIFIED-WITHDRAWN' THEN 'Certified - Withdrawn'
+        WHEN 'CERTIFIED - WITHDRAWN' THEN 'Certified - Withdrawn'
+        WHEN 'DENIED' THEN 'Denied'
+        WHEN 'WITHDRAWN' THEN 'Withdrawn'
+        WHEN 'REJECTED' THEN 'Rejected'
+        WHEN 'INVALIDATED' THEN 'Invalidated'
+        WHEN 'DETERMINATION ISSUED' THEN 'Determination Issued'
+        ELSE trim({expr}) END)"""
 
 
 def annual(amount_expr: str, unit_col: str) -> str:
@@ -84,11 +95,11 @@ def annual(amount_expr: str, unit_col: str) -> str:
     raw amount; otherwise NULL rather than poison averages.
     """
     return f"""(WITH b AS (SELECT round({amount_expr} * CASE
-        WHEN {unit_col} ILIKE 'year%%'  THEN 1
-        WHEN {unit_col} ILIKE 'month%%' THEN 12
-        WHEN {unit_col} ILIKE 'bi%%'    THEN 26
-        WHEN {unit_col} ILIKE 'week%%'  THEN 52
-        WHEN {unit_col} ILIKE 'hour%%'  THEN 2080
+        WHEN {unit_col} ILIKE 'year%%'  OR upper(trim({unit_col})) = 'YR'  THEN 1
+        WHEN {unit_col} ILIKE 'month%%' OR upper(trim({unit_col})) = 'MTH' THEN 12
+        WHEN {unit_col} ILIKE 'bi%%'                                      THEN 26
+        WHEN {unit_col} ILIKE 'week%%'  OR upper(trim({unit_col})) = 'WK'  THEN 52
+        WHEN {unit_col} ILIKE 'hour%%'  OR upper(trim({unit_col})) = 'HR'  THEN 2080
         END, 0) AS v)
       SELECT CASE
         WHEN v BETWEEN 10000 AND 3000000 THEN v
@@ -96,9 +107,14 @@ def annual(amount_expr: str, unit_col: str) -> str:
         END FROM b)"""
 
 
+NULL_UNIT = "CAST(NULL AS VARCHAR)"  # unknown unit; annual() keeps plausible values
+
 # target column -> SQL over the raw (all_varchar) sheet, per (program, era).
-# "flag" era = FLAG system files, FY2020 and later.
-MAPPINGS: dict[tuple[str, str], dict[str, str]] = {
+# A value may be a list of candidate expressions: the first whose referenced
+# columns exist in the file is used (handles per-year drift within an era).
+# Legacy headers with spaces/digits are double-quoted with their exact case.
+# Eras: "flag" = FLAG system (FY2020+); the rest are detected in era_of().
+MAPPINGS: dict[tuple[str, str], dict] = {
     ("lca", "flag"): {
         "case_number": "CASE_NUMBER",
         "case_status": "CASE_STATUS",
@@ -206,6 +222,274 @@ MAPPINGS: dict[tuple[str, str], dict[str, str]] = {
         "pw_annual": annual(n("PWD_WAGE_RATE"), "PWD_UNIT_OF_PAY"),
         "pw_wage_level": "PWD_OES_WAGE_LEVEL",
     },
+    # --- LCA, FY2019 (single-file layout with numbered worksite blocks) ---
+    ("lca", "h1b19"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": "CASE_STATUS",
+        "received_date": d("CASE_SUBMITTED"),
+        "decision_date": d("DECISION_DATE"),
+        "visa_class": "VISA_CLASS",
+        "employer_name": "EMPLOYER_NAME",
+        "employer_city": "EMPLOYER_CITY",
+        "employer_state": st("EMPLOYER_STATE"),
+        "employer_postal_code": "EMPLOYER_POSTAL_CODE",
+        "naics_code": "NAICS_CODE",
+        "job_title": "JOB_TITLE",
+        "soc_code": "SOC_CODE",
+        "soc_title": "SOC_TITLE",
+        "worksite_city": "WORKSITE_CITY_1",
+        "worksite_county": "WORKSITE_COUNTY_1",
+        "worksite_state": st("WORKSITE_STATE_1"),
+        "worksite_postal_code": "WORKSITE_POSTAL_CODE_1",
+        "wage_from": n("WAGE_RATE_OF_PAY_FROM_1"),
+        "wage_to": n("WAGE_RATE_OF_PAY_TO_1"),
+        "wage_unit": "WAGE_UNIT_OF_PAY_1",
+        "wage_annual": annual(n("WAGE_RATE_OF_PAY_FROM_1"), "WAGE_UNIT_OF_PAY_1"),
+        "pw_wage": n("PREVAILING_WAGE_1"),
+        "pw_unit": "PW_UNIT_OF_PAY_1",
+        "pw_annual": annual(n("PREVAILING_WAGE_1"), "PW_UNIT_OF_PAY_1"),
+        "pw_wage_level": "PW_WAGE_LEVEL_1",
+        "full_time_position": "FULL_TIME_POSITION",
+        "begin_date": d("PERIOD_OF_EMPLOYMENT_START_DATE"),
+        "end_date": d("PERIOD_OF_EMPLOYMENT_END_DATE"),
+        "total_workers": "try_cast(TOTAL_WORKER_POSITIONS AS INT)",
+    },
+    # --- LCA, FY2015-FY2018 ---
+    ("lca", "h1b15"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": "CASE_STATUS",
+        "received_date": d("CASE_SUBMITTED"),
+        "decision_date": d("DECISION_DATE"),
+        "visa_class": "VISA_CLASS",
+        "employer_name": "EMPLOYER_NAME",
+        "employer_city": "EMPLOYER_CITY",
+        "employer_state": st("EMPLOYER_STATE"),
+        "employer_postal_code": "EMPLOYER_POSTAL_CODE",
+        "naics_code": ["NAICS_CODE", "NAIC_CODE"],
+        "job_title": "JOB_TITLE",
+        "soc_code": "SOC_CODE",
+        "soc_title": "SOC_NAME",
+        "worksite_city": "WORKSITE_CITY",
+        "worksite_county": "WORKSITE_COUNTY",
+        "worksite_state": st("WORKSITE_STATE"),
+        "worksite_postal_code": "WORKSITE_POSTAL_CODE",
+        "wage_from": [n("WAGE_RATE_OF_PAY_FROM"), n("WAGE_RATE_OF_PAY")],
+        "wage_to": n("WAGE_RATE_OF_PAY_TO"),
+        "wage_unit": "WAGE_UNIT_OF_PAY",
+        "wage_annual": [annual(n("WAGE_RATE_OF_PAY_FROM"), "WAGE_UNIT_OF_PAY"),
+                        annual(n("WAGE_RATE_OF_PAY"), "WAGE_UNIT_OF_PAY")],
+        "pw_wage": n("PREVAILING_WAGE"),
+        "pw_unit": "PW_UNIT_OF_PAY",
+        "pw_annual": annual(n("PREVAILING_WAGE"), "PW_UNIT_OF_PAY"),
+        "pw_wage_level": "PW_WAGE_LEVEL",
+        "full_time_position": "FULL_TIME_POSITION",
+        "begin_date": d("EMPLOYMENT_START_DATE"),
+        "end_date": d("EMPLOYMENT_END_DATE"),
+        "total_workers": ["try_cast(TOTAL_WORKERS AS INT)",
+                          'try_cast("TOTAL WORKERS" AS INT)'],
+    },
+    # --- LCA, iCERT era FY2009-FY2014 ---
+    ("lca", "icert"): {
+        "case_number": "LCA_CASE_NUMBER",
+        "case_status": "STATUS",
+        "received_date": d("LCA_CASE_SUBMIT"),
+        "decision_date": d("DECISION_DATE"),
+        "visa_class": ["VISA_CLASS", "'H-1B'"],
+        "employer_name": "LCA_CASE_EMPLOYER_NAME",
+        "employer_city": "LCA_CASE_EMPLOYER_CITY",
+        "employer_state": st("LCA_CASE_EMPLOYER_STATE"),
+        "employer_postal_code": "LCA_CASE_EMPLOYER_POSTAL_CODE",
+        "naics_code": "LCA_CASE_NAICS_CODE",
+        "job_title": "LCA_CASE_JOB_TITLE",
+        "soc_code": "LCA_CASE_SOC_CODE",
+        "soc_title": "LCA_CASE_SOC_NAME",
+        "worksite_city": ["LCA_CASE_WORKLOC1_CITY", "WORK_LOCATION_CITY1"],
+        "worksite_state": [st("LCA_CASE_WORKLOC1_STATE"), st("WORK_LOCATION_STATE1")],
+        "wage_from": n("LCA_CASE_WAGE_RATE_FROM"),
+        "wage_to": n("LCA_CASE_WAGE_RATE_TO"),
+        "wage_unit": "LCA_CASE_WAGE_RATE_UNIT",
+        "wage_annual": [annual(n("LCA_CASE_WAGE_RATE_FROM"), "LCA_CASE_WAGE_RATE_UNIT"),
+                        annual(n("LCA_CASE_WAGE_RATE_FROM"), NULL_UNIT)],
+        "pw_wage": n("PW_1"),
+        "pw_unit": "PW_UNIT_1",
+        "pw_annual": annual(n("PW_1"), "PW_UNIT_1"),
+        "full_time_position": "FULL_TIME_POS",
+        "begin_date": d("LCA_CASE_EMPLOYMENT_START_DATE"),
+        "end_date": d("LCA_CASE_EMPLOYMENT_END_DATE"),
+        "total_workers": "try_cast(TOTAL_WORKERS AS INT)",
+    },
+    # --- LCA, EFILE era FY2008-FY2009 (H-1B Case Data) ---
+    ("lca", "efile"): {
+        "case_number": "CASE_NO",
+        "case_status": "APPROVAL_STATUS",
+        "received_date": d("SUBMITTED_DATE"),
+        "decision_date": d("DOL_DECISION_DATE"),
+        "visa_class": "'H-1B'",
+        "employer_name": ["EMPLOYER_NAME", "NAME"],
+        "employer_city": ["EMPLOYER_CITY", "CITY"],
+        "employer_state": [st("EMPLOYER_STATE"), st("STATE")],
+        "employer_postal_code": ["EMPLOYER_POSTAL_CODE", "POSTAL_CODE"],
+        "job_title": "JOB_TITLE",
+        "soc_code": ["OCCUPATIONAL_CODE", "JOB_CODE"],
+        "soc_title": "OCCUPATIONAL_TITLE",
+        "worksite_city": "CITY_1",
+        "worksite_state": st("STATE_1"),
+        "wage_from": n("WAGE_RATE_1"),
+        "wage_to": n("MAX_RATE_1"),
+        "wage_unit": "RATE_PER_1",
+        "wage_annual": annual(n("WAGE_RATE_1"), "RATE_PER_1"),
+        "pw_wage": n("PREVAILING_WAGE_1"),
+        "pw_annual": annual(n("PREVAILING_WAGE_1"), "RATE_PER_1"),
+        "begin_date": d("BEGIN_DATE"),
+        "end_date": d("END_DATE"),
+        "total_workers": "try_cast(NBR_IMMIGRANTS AS INT)",
+    },
+    # --- PERM, ETA-9089 era FY2015-FY2019 ---
+    ("perm", "perm9089"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": "CASE_STATUS",
+        "received_date": d("CASE_RECEIVED_DATE"),
+        "decision_date": d("DECISION_DATE"),
+        "visa_class": "'PERM'",
+        "employer_name": "EMPLOYER_NAME",
+        "employer_city": "EMPLOYER_CITY",
+        "employer_state": st("EMPLOYER_STATE"),
+        "employer_postal_code": "EMPLOYER_POSTAL_CODE",
+        "naics_code": "NAICS_US_CODE",
+        "job_title": "JOB_INFO_JOB_TITLE",
+        "soc_code": "PW_SOC_CODE",
+        "soc_title": "PW_SOC_TITLE",
+        "worksite_city": "JOB_INFO_WORK_CITY",
+        "worksite_state": st("JOB_INFO_WORK_STATE"),
+        "worksite_postal_code": "JOB_INFO_WORK_POSTAL_CODE",
+        "wage_from": [n("WAGE_OFFER_FROM_9089"), n("WAGE_OFFERED_FROM_9089")],
+        "wage_to": [n("WAGE_OFFER_TO_9089"), n("WAGE_OFFERED_TO_9089")],
+        "wage_unit": ["WAGE_OFFER_UNIT_OF_PAY_9089", "WAGE_OFFERED_UNIT_OF_PAY_9089"],
+        "wage_annual": [annual(n("WAGE_OFFER_FROM_9089"), "WAGE_OFFER_UNIT_OF_PAY_9089"),
+                        annual(n("WAGE_OFFERED_FROM_9089"), "WAGE_OFFER_UNIT_OF_PAY_9089"),
+                        annual(n("WAGE_OFFERED_FROM_9089"), "WAGE_OFFERED_UNIT_OF_PAY_9089")],
+        "pw_wage": n("PW_AMOUNT_9089"),
+        "pw_unit": "PW_UNIT_OF_PAY_9089",
+        "pw_annual": annual(n("PW_AMOUNT_9089"), "PW_UNIT_OF_PAY_9089"),
+        "pw_wage_level": "PW_LEVEL_9089",
+    },
+    # --- PERM, FY2008-FY2014 (short layout; FY2009 headers contain spaces) ---
+    ("perm", "perm_old"): {
+        "case_number": ["CASE_NUMBER", "CASE_NO"],
+        "case_status": ["CASE_STATUS", '"CASE STATUS"'],
+        "decision_date": [d("DECISION_DATE"), d('"DECISION DATE"')],
+        "visa_class": "'PERM'",
+        "employer_name": ["EMPLOYER_NAME", '"EMPLOYER NAME"'],
+        "employer_city": ["EMPLOYER_CITY", '"EMPLOYER CITY"'],
+        "employer_state": [st("EMPLOYER_STATE"), st('"EMPLOYER STATE"')],
+        "employer_postal_code": ["EMPLOYER_POSTAL_CODE", '"EMPLOYER POSTAL CODE"'],
+        "naics_code": ['"2007_NAICS_US_CODE"', '"2007 NAICS US CODE"',
+                       '"2007_NAICS_US_Code"'],
+        "job_title": ["PW_JOB_TITLE_9089", '"PW JOB TITLE 9089"'],
+        "soc_code": ["PW_SOC_CODE", '"PW SOC CODE"'],
+        "soc_title": ["PW_SOC_TITLE", '"PW SOC Title"'],
+        "worksite_city": ["JOB_INFO_WORK_CITY", '"JOB INFO WORK CITY"'],
+        "worksite_state": [st("JOB_INFO_WORK_STATE"), st('"JOB INFO WORK STATE"')],
+        "wage_from": [n("WAGE_OFFER_FROM_9089"), n("WAGE_OFFERED_FROM_9089"),
+                      n('"WAGE OFFER FROM 9089"')],
+        "wage_to": [n("WAGE_OFFER_TO_9089"), n("WAGE_OFFERED_TO_9089"),
+                    n('"WAGE OFFER TO 9089"')],
+        "wage_unit": ["WAGE_OFFER_UNIT_OF_PAY_9089", "WAGE_OFFERED_UNIT_OF_PAY_9089",
+                      '"WAGE OFFER UNIT OF PAY 9089"'],
+        "wage_annual": [annual(n("WAGE_OFFER_FROM_9089"), "WAGE_OFFER_UNIT_OF_PAY_9089"),
+                        annual(n("WAGE_OFFERED_FROM_9089"), "WAGE_OFFERED_UNIT_OF_PAY_9089"),
+                        annual(n('"WAGE OFFER FROM 9089"'), '"WAGE OFFER UNIT OF PAY 9089"'),
+                        annual(n("WAGE_OFFERED_FROM_9089"), NULL_UNIT)],
+        "pw_wage": [n("PW_AMOUNT_9089"), n('"PW AMOUNT 9089"')],
+        "pw_unit": ["PW_UNIT_OF_PAY_9089", '"PW UNIT OF PAY 9089"'],
+        "pw_annual": [annual(n("PW_AMOUNT_9089"), "PW_UNIT_OF_PAY_9089"),
+                      annual(n('"PW AMOUNT 9089"'), '"PW UNIT OF PAY 9089"')],
+        "pw_wage_level": ["PW_LEVEL_9089", '"PW LEVEL 9089"'],
+    },
+    # --- PWD, FY2016-FY2019 ---
+    ("pwd", "pw16"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": "CASE_STATUS",
+        "received_date": d("SUBMIT_DATE"),
+        "decision_date": d("DETERMINATION_DATE"),
+        "visa_class": "VISA_CLASS",
+        "employer_name": "BUSINESS_NAME",
+        "employer_city": ["EMPLOYER_CITY", '"EMPLOYER _CITY"'],
+        "employer_state": [st("EMPLOYER_STATE"), st('"EMPLOYER _STATE"')],
+        "employer_postal_code": ["EMPLOYER_POSTAL_CODE", '"EMPLOYER_ POSTAL _CODE"'],
+        "naics_code": "NAICS_CODE",
+        "job_title": "JOB_TITLE",
+        "soc_code": "PWD_SOC_CODE",
+        "soc_title": "PWD_SOC_TITLE",
+        "worksite_city": "PRIMARY_WORKSITE_CITY",
+        "worksite_county": "PRIMARY_WORKSITE_COUNTY",
+        "worksite_state": st("PRIMARY_WORKSITE_STATE"),
+        "worksite_postal_code": "PRIMARY_WORKSITE_POSTAL_CODE",
+        "wage_from": n("PWD_WAGE_RATE"),
+        "wage_unit": "PWD_UNIT_OF_PAY",
+        "wage_annual": annual(n("PWD_WAGE_RATE"), "PWD_UNIT_OF_PAY"),
+        "pw_wage": n("PWD_WAGE_RATE"),
+        "pw_unit": "PWD_UNIT_OF_PAY",
+        "pw_annual": annual(n("PWD_WAGE_RATE"), "PWD_UNIT_OF_PAY"),
+        "pw_wage_level": "PWD_WAGE_LEVEL",
+    },
+    # --- PWD, FY2015 (one-off layout) ---
+    ("pwd", "pw15"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": "STATUS",
+        "received_date": d("SUBMIT_DATE"),
+        "decision_date": d("DETERMINATION_ISSUED"),
+        "visa_class": "VISA_CLASS",
+        "employer_name": "BUSINESS_NAME",
+        "employer_city": '"EMPLOYER CITY"',
+        "employer_state": st('"EMPLOYER STATE"'),
+        "employer_postal_code": '"EMPLOYER POSTAL CODE"',
+        "naics_code": "NAIC_ID",
+        "job_title": "JOB_TITLE",
+        "soc_code": "SOC_CODE",
+        "soc_title": "SOC_CODE_NAME",
+        "worksite_city": "WORKSITE_CITY",
+        "worksite_county": "WORKSITE_COUNTY",
+        "worksite_state": st("WORKSITE_STATE"),
+        "worksite_postal_code": "WORKSITE_ZIP",
+        "wage_from": n("PREVAIL_WAGE"),
+        "wage_unit": "PAY_RANGE_DESC",
+        "wage_annual": [annual(n("PREVAIL_WAGE"), "PAY_RANGE_DESC"),
+                        annual(n("PREVAIL_WAGE"), NULL_UNIT)],
+        "pw_wage": n("PREVAIL_WAGE"),
+        "pw_unit": "PAY_RANGE_DESC",
+        "pw_annual": [annual(n("PREVAIL_WAGE"), "PAY_RANGE_DESC"),
+                      annual(n("PREVAIL_WAGE"), NULL_UNIT)],
+        "pw_wage_level": "WAGE_LEVEL",
+    },
+    # --- PWD, FY2010-FY2014 ---
+    ("pwd", "pw10"): {
+        "case_number": "CASE_NUMBER",
+        "case_status": ["CASE_STATUS", "STATUS"],
+        "decision_date": [d("PW_DETERMINATION_DATE"), d("PW_DETERM_DATE")],
+        "visa_class": ["VISA_CLASS", NULL_UNIT],
+        "employer_name": ["EMPLOYER_LEGAL_BUSINESS_NAME", "EMPLYER_LEGAL_BUSINESS_NAME"],
+        "employer_city": ["EMPLOYER_CITY", '"EMPLOYER CITY"'],
+        "employer_state": [st("EMPLOYER_STATE"), st('"EMPLOYER STATE"')],
+        "employer_postal_code": ["EMPLOYER_POSTAL_CODE", '"EMPLOYER POSTAL CODE"'],
+        "naics_code": ["NAICS_US_CODE", "NAIC_US_CODE", "NAICS_CODE"],
+        "job_title": "PW_JOB_TITLE",
+        "soc_code": "PWD_SOC_CODE",
+        "soc_title": ["PWD_SOC_TITLE", "PWD_SOC_CODE_TITLE", "PW_SOC_TITLE"],
+        "worksite_city": "PRIMARY_WORKSITE_CITY",
+        "worksite_county": "PRIMARY_WORKSITE_COUNTY",
+        "worksite_state": st("PRIMARY_WORKSITE_STATE"),
+        "worksite_postal_code": "PRIMARY_WORKSITE_POSTAL_CODE",
+        "wage_from": n("PWD_WAGE_RATE"),
+        "wage_unit": ["PWD_UNIT_OF_PAY", "PW_UNIT_OF_PAY"],
+        "wage_annual": [annual(n("PWD_WAGE_RATE"), "PWD_UNIT_OF_PAY"),
+                        annual(n("PWD_WAGE_RATE"), "PW_UNIT_OF_PAY")],
+        "pw_wage": n("PWD_WAGE_RATE"),
+        "pw_unit": ["PWD_UNIT_OF_PAY", "PW_UNIT_OF_PAY"],
+        "pw_annual": [annual(n("PWD_WAGE_RATE"), "PWD_UNIT_OF_PAY"),
+                      annual(n("PWD_WAGE_RATE"), "PW_UNIT_OF_PAY")],
+        "pw_wage_level": "PWD_WAGE_LEVEL",
+    },
 }
 
 CORE_COLUMNS = [
@@ -222,19 +506,37 @@ NUM_COLS = {"wage_from", "wage_to", "wage_annual", "pw_wage", "pw_annual"}
 INT_COLS = {"total_workers"}
 
 
-def era_of(con: duckdb.DuckDBPyConnection, path: Path, program: str, fy: int) -> str | None:
-    """Which schema era a file belongs to; None = not yet supported.
-
-    PERM is detected from the actual header because old-form and new-form
-    files coexist (FY2024 has one of each).
-    """
-    if fy < 2020:
-        return None
-    if program != "perm":
-        return "flag"
-    cols = {r[0] for r in con.execute(
-        f"DESCRIBE SELECT * FROM read_xlsx('{path.as_posix()}', all_varchar=true)").fetchall()}
-    return "flag" if "EMP_BUSINESS_NAME" in cols else "legacy"
+def era_of(program: str, have: set[str]) -> str | None:
+    """Schema era for a file, from its actual (uppercased) header columns."""
+    if program == "lca":
+        if "LCA_CASE_NUMBER" in have:
+            return "icert"
+        if "APPROVAL_STATUS" in have:
+            return "efile"
+        if "WORKSITE_CITY_1" in have:
+            return "h1b19"
+        if "CASE_SUBMITTED" in have:
+            return "h1b15"
+        if "RECEIVED_DATE" in have:
+            return "flag"
+    if program == "perm":
+        if "EMP_BUSINESS_NAME" in have:
+            return "flag"
+        if "EMPLOYER_STATE_PROVINCE" in have:
+            return "legacy"
+        if "CASE_RECEIVED_DATE" in have:
+            return "perm9089"
+        return "perm_old"
+    if program == "pwd":
+        if "REQUESTOR_POC_LAST_NAME" in have or "TYPE_OF_REPRESENTATION" in have:
+            return "flag"
+        if "DETERMINATION_ISSUED" in have:
+            return "pw15"
+        if "BUSINESS_NAME" in have:
+            return "pw16"
+        if "PW_JOB_TITLE" in have:
+            return "pw10"
+    return None
 
 
 def col_type(c: str) -> str:
@@ -250,37 +552,55 @@ def col_type(c: str) -> str:
 SQL_WORDS = {
     "DATE", "INT", "INTEGER", "DOUBLE", "VARCHAR", "CASE", "WHEN", "THEN",
     "ELSE", "END", "ILIKE", "BETWEEN", "AND", "OR", "AS", "SELECT", "FROM",
-    "WITH", "NULL", "COALESCE",
+    "WITH", "NULL", "COALESCE", "CAST",
 }
 
 
 def referenced_cols(expr: str) -> set[str]:
-    """Raw sheet columns an expression references (identifiers are UPPERCASE)."""
-    no_strings = re.sub(r"'[^']*'", "", expr)
-    tokens = set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", no_strings))
-    return {t for t in tokens if t not in SQL_WORDS and not t.startswith("TRY_CAST")}
+    """Raw sheet columns an expression references, uppercased.
+
+    Unquoted identifiers are written UPPERCASE by convention here; double-
+    quoted identifiers (headers with spaces/digits/mixed case) as-is.
+    """
+    quoted = set(re.findall(r'"([^"]+)"', expr))
+    bare = re.sub(r"'[^']*'", "", expr)
+    bare = re.sub(r'"[^"]*"', "", bare)
+    tokens = set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", bare)) - SQL_WORDS
+    return {t.upper() for t in tokens | quoted}
 
 
-def stage_file(con: duckdb.DuckDBPyConnection, path: Path, program: str, era: str) -> None:
+def pick(candidates, have: set[str]) -> str | None:
+    """First candidate expression whose referenced columns all exist."""
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    for expr in candidates:
+        if referenced_cols(expr) <= have:
+            return expr
+    return None
+
+
+def stage_file(con: duckdb.DuckDBPyConnection, path: Path, program: str,
+               era: str, have: set[str]) -> None:
     out = STAGE / program / (path.stem + ".parquet")
-    if out.exists() and out.stat().st_mtime >= path.stat().st_mtime:
-        print(f"staged (skip)  {path.name}")
-        return
     out.parent.mkdir(parents=True, exist_ok=True)
     mapping = MAPPINGS[(program, era)]
-    have = {r[0] for r in con.execute(
-        f"DESCRIBE SELECT * FROM read_xlsx('{path.as_posix()}', all_varchar=true)").fetchall()}
-    select = ",\n  ".join(
-        f"try_cast(({mapping[c]}) AS {col_type(c)}) AS {c}"
-        if c in mapping and referenced_cols(mapping[c]) <= have
-        else f"CAST(NULL AS {col_type(c)}) AS {c}"
-        for c in CORE_COLUMNS)
-    print(f"staging        {path.name} ...", flush=True)
+
+    def target_expr(c: str) -> str:
+        expr = pick(mapping[c], have) if c in mapping else None
+        if expr is None:
+            return f"CAST(NULL AS {col_type(c)}) AS {c}"
+        if c == "case_status":
+            expr = norm_status(expr)
+        return f"try_cast(({expr}) AS {col_type(c)}) AS {c}"
+
+    select = ",\n  ".join(target_expr(c) for c in CORE_COLUMNS)
+    print(f"staging        {path.name} [{era}] ...", flush=True)
     con.execute(f"""
         COPY (
-          SELECT '{program}' AS program, {select}, '{path.name}' AS source_file
-          FROM read_xlsx('{path.as_posix()}', all_varchar=true)
-          WHERE CASE_NUMBER IS NOT NULL
+          SELECT * FROM (
+            SELECT '{program}' AS program, {select}, '{path.name}' AS source_file
+            FROM read_xlsx('{path.as_posix()}', all_varchar=true)
+          ) WHERE case_number IS NOT NULL
         ) TO '{out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)
     """)
     rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
@@ -289,16 +609,22 @@ def stage_file(con: duckdb.DuckDBPyConnection, path: Path, program: str, era: st
 
 def stage_all(con: duckdb.DuckDBPyConnection) -> None:
     for path in sorted(RAW.glob("*.xlsx")):
-        m = FILE_PAT.match(path.name)
-        if not m:
+        ident = identify(path.name)
+        if not ident:
             print(f"unrecognized   {path.name} (skipped)")
             continue
-        program, fy = PROGRAM_OF[m.group(1).upper()], int(m.group(2))
-        era = era_of(con, path, program, fy)
-        if era is None:
-            print(f"unsupported FY {path.name} (skipped; add era mapping)")
+        program, _, _ = ident
+        out = STAGE / program / (path.stem + ".parquet")
+        if out.exists() and out.stat().st_mtime >= path.stat().st_mtime:
+            print(f"staged (skip)  {path.name}")
             continue
-        stage_file(con, path, program, era)
+        have = {r[0].upper() for r in con.execute(
+            f"DESCRIBE SELECT * FROM read_xlsx('{path.as_posix()}', all_varchar=true)").fetchall()}
+        era = era_of(program, have)
+        if era is None:
+            print(f"unsupported    {path.name} (skipped; add era mapping)")
+            continue
+        stage_file(con, path, program, era, have)
 
 
 def publish(con: duckdb.DuckDBPyConnection) -> None:
