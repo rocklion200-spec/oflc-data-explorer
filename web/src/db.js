@@ -35,17 +35,47 @@ export async function registerParquet(fileName) {
   registered.add(fileName);
 }
 
+// Sentinel error for queries skipped or cancelled because their result is
+// no longer wanted (a newer filter state superseded them).
+export const STALE = Symbol("stale-query");
+export const isStale = (e) => e === STALE;
+
+function toRows(batchLike) {
+  return batchLike.toArray().map((row) => {
+    const o = row.toJSON();
+    for (const k of Object.keys(o)) if (typeof o[k] === "bigint") o[k] = Number(o[k]);
+    return o;
+  });
+}
+
 // Serialize queries through one connection; convert Arrow rows to plain JS.
+// `stale` (optional) is polled: queued queries whose result is already
+// obsolete are skipped, and an in-flight query is cancelled via DuckDB's
+// pending-query protocol instead of running to completion.
 let chain = Promise.resolve();
-export function query(sql) {
+export function query(sql, stale) {
   const run = async () => {
+    if (stale?.()) throw STALE;
     const conn = await getConn();
-    const table = await conn.query(sql);
-    return table.toArray().map((row) => {
-      const o = row.toJSON();
-      for (const k of Object.keys(o)) if (typeof o[k] === "bigint") o[k] = Number(o[k]);
-      return o;
-    });
+    if (!stale) {
+      const table = await conn.query(sql);
+      return toRows(table);
+    }
+    // conn.send() executes through the cancellable pending-query path.
+    const watchdog = setInterval(() => {
+      if (stale()) conn.cancelSent().catch(() => {});
+    }, 100);
+    try {
+      const reader = await conn.send(sql);
+      const rows = [];
+      for await (const batch of reader) rows.push(...toRows(batch));
+      if (stale()) throw STALE;
+      return rows;
+    } catch (e) {
+      throw stale() ? STALE : e;
+    } finally {
+      clearInterval(watchdog);
+    }
   };
   const p = chain.then(run, run);
   chain = p.catch(() => {});
