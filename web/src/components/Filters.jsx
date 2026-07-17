@@ -17,8 +17,9 @@ export function ProgramTabs({ programs, program, onChange }) {
 }
 
 // Text input with async suggestions. Free text stays a partial match; picking
-// a suggestion just fills in that exact spelling (still matched with ILIKE).
-function Autocomplete({ label, placeholder, value, onChange, suggest }) {
+// a suggestion fills in that spelling (still ILIKE) — unless onPickItem is
+// given (group suggestions), in which case picking selects the group instead.
+function Autocomplete({ label, placeholder, value, onChange, suggest, onPickItem }) {
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -43,12 +44,15 @@ function Autocomplete({ label, placeholder, value, onChange, suggest }) {
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
-  const pick = (v) => { onChange(v); setOpen(false); };
+  const pick = (it) => {
+    if (onPickItem) onPickItem(it); else onChange(it.v);
+    setOpen(false);
+  };
   const onKey = (e) => {
     if (!open || !items.length) return;
     if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(a + 1, items.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, -1)); }
-    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(items[active].v); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(items[active]); }
     else if (e.key === "Escape") setOpen(false);
   };
 
@@ -63,7 +67,7 @@ function Autocomplete({ label, placeholder, value, onChange, suggest }) {
           {items.map((it, i) => (
             <li key={it.v} role="option" aria-selected={i === active}
               className={i === active ? "active" : ""}
-              onMouseDown={(e) => { e.preventDefault(); pick(it.v); }}>
+              onMouseDown={(e) => { e.preventDefault(); pick(it); }}>
               <span className="v">{it.v}</span>
               <span className="n">{fmtNum(it.n)}</span>
             </li>
@@ -111,20 +115,26 @@ function YearRange({ years, selectedYears, onYears }) {
   );
 }
 
-export function Filters({ years, selectedYears, onYears, filters, onFilters, options, program, suggest }) {
+export function Filters({ years, selectedYears, onYears, filters, onFilters, options, program,
+  suggest, onPickGroup }) {
   const set = (k) => (e) => onFilters({ ...filters, [k]: e.target.value });
   const setVal = (k) => (v) => onFilters({ ...filters, [k]: v });
   const sug = (field, col) => (text, stale) => suggest(field, col, text, stale);
+  // suggestions for these fields are groups; picking one selects the group
+  const pickG = (field) => onPickGroup ? (it) => onPickGroup(field, it) : undefined;
   return (
     <div className="panel">
       <h2>Filters</h2>
       <div className="filters">
         <Autocomplete label="Employer name" placeholder="e.g. Google" value={filters.employer}
-          onChange={setVal("employer")} suggest={sug("employer", "employer_name")} />
+          onChange={setVal("employer")} suggest={sug("employer", "employer_name")}
+          onPickItem={pickG("employer")} />
         <Autocomplete label="Job title" placeholder="e.g. Software Engineer" value={filters.jobTitle}
-          onChange={setVal("jobTitle")} suggest={sug("jobTitle", "job_title")} />
+          onChange={setVal("jobTitle")} suggest={sug("jobTitle", "job_title")}
+          onPickItem={pickG("jobTitle")} />
         <Autocomplete label="SOC code or title" placeholder="e.g. 15-1252 or Developers" value={filters.soc}
-          onChange={setVal("soc")} suggest={sug("soc", "soc_title")} />
+          onChange={setVal("soc")} suggest={sug("soc", "soc_title")}
+          onPickItem={pickG("soc")} />
         <label>Worksite state
           <select value={filters.state} onChange={set("state")}>
             <option value="">All states</option>

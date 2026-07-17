@@ -6,6 +6,7 @@ const esc = (s) => s.replace(/'/g, "''");
 export const COLUMN_TYPES = {
   case_number: "text", case_status: "text", visa_class: "text",
   employer_name: "text", employer_city: "text", employer_state: "text",
+  employer_group: "text", soc_group: "text", title_group: "text",
   naics_code: "text", job_title: "text", soc_code: "text", soc_title: "text",
   worksite_address: "text", worksite_city: "text", worksite_county: "text",
   worksite_state: "text", worksite_postal_code: "text",
@@ -71,8 +72,21 @@ function columnPredicate(col, raw) {
   return `${col} ILIKE '%${esc(v)}%'`;
 }
 
-export function whereClause(f, colFilters = {}) {
+// Exact-match predicates for drill-down selections (group chips).
+export function selClause(sel = {}) {
   const w = [];
+  if (sel.employer) w.push(`employer_group = '${esc(sel.employer.k)}'`);
+  if (sel.soc) w.push(`soc_group = '${esc(sel.soc.k)}'`);
+  if (sel.title) w.push(`title_group = '${esc(sel.title.k)}'`);
+  if (sel.loc) {
+    w.push(`worksite_state = '${esc(sel.loc.state)}'`);
+    if (sel.loc.cityKey) w.push(`upper(trim(worksite_city)) = '${esc(sel.loc.cityKey)}'`);
+  }
+  return w;
+}
+
+export function whereClause(f, colFilters = {}, sel = {}) {
+  const w = selClause(sel);
   if (f.employer) w.push(`(employer_name ILIKE '%${esc(f.employer)}%')`);
   if (f.jobTitle) w.push(`(job_title ILIKE '%${esc(f.jobTitle)}%')`);
   if (f.soc) w.push(`(soc_code ILIKE '%${esc(f.soc)}%' OR soc_title ILIKE '%${esc(f.soc)}%')`);
@@ -129,7 +143,8 @@ export async function fetchRows(from, where, sort, page, pageSize, stale) {
            worksite_postal_code,
            wage_annual, wage_from, wage_to, wage_unit,
            pw_annual, pw_wage, pw_wage_level,
-           full_time_position, total_workers, fiscal_year
+           full_time_position, total_workers, fiscal_year,
+           employer_group, soc_group, title_group
     FROM ${from} ${where}
     ORDER BY ${sort.col} ${sort.dir === "asc" ? "ASC" : "DESC"} NULLS LAST
     LIMIT ${pageSize} OFFSET ${page * pageSize}`, stale);
@@ -154,4 +169,112 @@ export async function fetchSuggestions(from, where, col, text, stale, limit = 12
     FROM ${from} ${andWhere(where, cond)}
     GROUP BY 1 ORDER BY n DESC, v LIMIT ${limit}`, stale);
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Precomputed aggregate ("cube") layer — powers group search, entity pages and
+// clickable drill-down without scanning row-level parquet. Files are sorted by
+// their leading key, so HTTP range reads prune to a couple of row groups.
+
+async function aggFrom(manifest, name) {
+  const f = manifest.aggregates?.[name]?.file;
+  if (!f) return null;
+  await registerParquet(f);
+  return `read_parquet('${f}')`;
+}
+
+export const hasAggregates = (manifest) => !!manifest.aggregates;
+
+// Unified group search: the three *_top files (one row per group, ordered by
+// size) are loaded once into a local table so every keystroke is in-memory.
+let searchReady = null;
+export function ensureSearchTable(manifest) {
+  if (!searchReady) {
+    searchReady = (async () => {
+      const parts = [];
+      for (const [dim, name] of [["employer", "employers_top"],
+                                 ["soc", "soc_top"], ["title", "titles_top"]]) {
+        const from = await aggFrom(manifest, name);
+        if (from) parts.push(`SELECT '${dim}' AS dim, k, label, n FROM ${from}`);
+      }
+      if (!parts.length) throw new Error("aggregate files missing");
+      await query(`CREATE TABLE IF NOT EXISTS search_groups AS
+                   ${parts.join(" UNION ALL ")}`);
+    })();
+    searchReady.catch(() => { searchReady = null; }); // allow retry
+  }
+  return searchReady;
+}
+
+export async function searchGroups(manifest, text, stale, perDim = 5) {
+  await ensureSearchTable(manifest);
+  const t = esc(text.trim());
+  const cond = t ? `WHERE label ILIKE '%${t}%' OR k ILIKE '%${t}%'` : "";
+  return query(`
+    SELECT dim, k, label, n FROM (
+      SELECT *, row_number() OVER (PARTITION BY dim ORDER BY n DESC) AS rn
+      FROM search_groups ${cond}
+    ) WHERE rn <= ${perDim}
+    ORDER BY CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1 ELSE 2 END, n DESC`,
+    stale);
+}
+
+// Group suggestions for a single dimension (filter-panel autocompletes).
+export async function searchGroupsIn(manifest, dim, text, stale, limit = 12) {
+  await ensureSearchTable(manifest);
+  const t = esc(text);
+  const cond = t ? `AND (label ILIKE '%${t}%' OR k ILIKE '%${t}%')` : "";
+  const rows = await query(`
+    SELECT k, label, n FROM search_groups
+    WHERE dim = '${dim}' ${cond} ORDER BY n DESC LIMIT ${limit}`, stale);
+  return rows.map((r) => ({ v: r.label, ...r }));
+}
+
+const SUMMARY_FILE = { employer: "employers", soc: "soc", title: "titles" };
+
+// One fetch returns everything the entity page header needs: the all-years
+// all-programs rollup, per-program rollups, and the per-FY trend.
+export async function fetchEntitySummary(manifest, dim, key, stale) {
+  const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
+  if (!from) return null;
+  const rows = await query(
+    `SELECT * FROM ${from} WHERE k = '${esc(key)}'`, stale);
+  return {
+    overall: rows.find((r) => r.program == null && r.fy == null) || null,
+    programs: rows.filter((r) => r.program != null && r.fy == null),
+    trend: rows.filter((r) => r.program == null && r.fy != null)
+      .sort((a, b) => a.fy - b.fy),
+  };
+}
+
+export async function fetchEntityTop(manifest, cube, key, stale, limit = 12) {
+  const from = await aggFrom(manifest, cube);
+  if (!from) return [];
+  if (cube === "emp_loc" || cube === "soc_loc") {
+    return query(`
+      SELECT city || ', ' || state AS label2, state, city, city_key, n, median_wage
+      FROM ${from} WHERE k = '${esc(key)}' AND city_key IS NOT NULL
+      ORDER BY n DESC LIMIT ${limit}`, stale);
+  }
+  return query(`
+    SELECT k2, label2, n, median_wage
+    FROM ${from} WHERE k = '${esc(key)}' ORDER BY n DESC LIMIT ${limit}`, stale);
+}
+
+// Landing-page overview: first rows of the ordered *_top files.
+export async function fetchOverviewTop(manifest, name, stale, limit = 12) {
+  const from = await aggFrom(manifest, name);
+  if (!from) return [];
+  return query(
+    `SELECT k, label, n, median_wage FROM ${from} LIMIT ${limit}`, stale);
+}
+
+// Row-level top-N for the combined drill view (2+ selections), one query per
+// unselected dimension. labelExpr turns group keys into readable labels.
+export async function fetchTopGroups(from, where, col, labelExpr, stale, limit = 10) {
+  return query(`
+    SELECT ${col} AS k, ${labelExpr} AS label, count(*)::INT AS n,
+           round(median(wage_annual))::INT AS median_wage
+    FROM ${from} ${andWhere(where, `${col} IS NOT NULL`)}
+    GROUP BY 1 ORDER BY n DESC LIMIT ${limit}`, stale);
 }

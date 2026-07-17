@@ -47,7 +47,7 @@ function Tooltip({ tip }) {
 }
 
 // data: [{month:'2025-10', value:n}], single series (no legend needed)
-export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value" }) {
+export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value", xLabel = "Month" }) {
   const [ref, width] = useWidth();
   const [tip, setTip] = useState(null);
   const height = 200, mL = 44, mR = 14, mT = 10, mB = 24;
@@ -66,7 +66,7 @@ export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value" }) {
     const c = Math.max(0, Math.min(data.length - 1, i));
     setTip({
       x: e.clientX, y: e.clientY, i: c,
-      lines: [["Month", data[c].month], [valueLabel, valueFmt(data[c].value)]],
+      lines: [[xLabel, data[c].month], [valueLabel, valueFmt(data[c].value)]],
     });
   };
 
@@ -119,8 +119,9 @@ export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value" }) {
   );
 }
 
-// data: [{label, value, extra}] horizontal bars, single hue, value at tip
-export function TopBars({ data, valueFmt = fmtNum, extraLabel }) {
+// data: [{label, value, extra}] horizontal bars, single hue, value at tip.
+// onPick (optional) makes rows clickable — used for drill-down selection.
+export function TopBars({ data, valueFmt = fmtNum, extraLabel, onPick }) {
   const [ref, width] = useWidth();
   const [tip, setTip] = useState(null);
   const rowH = 26, barH = 16, labelW = Math.min(230, Math.max(120, width * 0.34));
@@ -142,10 +143,13 @@ export function TopBars({ data, valueFmt = fmtNum, extraLabel }) {
         <svg width={width} height={height} role="img" onMouseLeave={() => setTip(null)}>
           {data.map((d, i) => (
             <g key={d.label} transform={`translate(0,${i * rowH + 4})`}
+              style={onPick ? { cursor: "pointer" } : undefined}
+              onClick={onPick ? () => onPick(d) : undefined}
               onMouseMove={(e) => setTip({
                 x: e.clientX, y: e.clientY,
                 lines: [["", d.label], ["Records", fmtNum(d.value)],
-                  ...(extraLabel && d.extra != null ? [[extraLabel, fmtUsd(d.extra)]] : [])],
+                  ...(extraLabel && d.extra != null ? [[extraLabel, fmtUsd(d.extra)]] : []),
+                  ...(onPick ? [["", "Click to drill in"]] : [])],
               })}>
               <rect x="0" y="-2" width={width} height={rowH - 2} fill="transparent" />
               <text x={labelW - 8} y={barH - 4} textAnchor="end" fontSize="11.5" fill="var(--text-secondary)">

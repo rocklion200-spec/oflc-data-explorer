@@ -16,6 +16,7 @@ const LABELS = {
   wage_from: "Wage from", wage_unit: "Wage unit", pw_wage: "Prevailing (raw)",
   pw_wage_level: "PW level", full_time_position: "Full-time",
   end_date: "End date", fiscal_year: "Fiscal year",
+  employer_group: "Employer group", soc_group: "Role group", title_group: "Title group",
 };
 
 const DEFAULT_VISIBLE = {

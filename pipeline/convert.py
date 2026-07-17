@@ -29,6 +29,7 @@ from pathlib import Path
 
 import duckdb
 
+import groups
 from download import identify
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -655,9 +656,14 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
             continue
         files = ", ".join(f"'{p.as_posix()}'" for p in staged)
         # newest source file wins for duplicated case numbers
+        # materialized: the group expressions + dedupe window are pricey, and
+        # the per-FY COPY loop below would otherwise recompute them each pass
         con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW pub AS
+            CREATE OR REPLACE TEMP TABLE pub AS
             SELECT *,
+                   {groups.employer_group("employer_name")} AS employer_group,
+                   {groups.soc_group("soc_code")} AS soc_group,
+                   {groups.title_group("job_title")} AS title_group,
                    year(COALESCE(decision_date, received_date))
                    + CASE WHEN month(COALESCE(decision_date, received_date)) >= 10
                           THEN 1 ELSE 0 END AS fiscal_year
@@ -678,9 +684,10 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
         prog_files = []
         for fy in fys:
             out = WEB_DATA / f"{program}_fy{fy}.parquet"
+            # sorted by group so entity-filtered queries prune to few row groups
             con.execute(f"""
                 COPY (SELECT * EXCLUDE (rn) FROM pub WHERE fiscal_year = {fy}
-                      ORDER BY decision_date)
+                      ORDER BY employer_group, soc_group)
                 TO '{out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)
             """)
             rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
@@ -688,8 +695,122 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
                                "bytes": out.stat().st_size})
             print(f"published      {out.name}: {rows:,} rows, {out.stat().st_size/1e6:.1f} MB")
         manifest["programs"][program] = prog_files
+        con.execute("DROP TABLE pub")
+    manifest["aggregates"] = publish_aggregates(con)
     (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote          {(WEB_DATA / 'datasets.json').relative_to(ROOT)}")
+
+
+# The precomputed aggregate ("cube") files that power the drill-down UI.
+# Summaries carry program/fiscal-year grain plus GROUPING SETS rollups (so
+# all-years/all-programs medians are exact); pairwise cubes are all-years
+# rollups only, sorted by their leading key so DuckDB-WASM's HTTP range
+# reads prune to one or two row groups per entity lookup.
+def publish_aggregates(con: duckdb.DuckDBPyConnection) -> dict:
+    agg_dir = WEB_DATA / "agg"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    row_files = sorted(WEB_DATA.glob("*_fy*.parquet"))
+    files = ", ".join(f"'{p.as_posix()}'" for p in row_files)
+    curated = ", ".join("'" + g.replace("'", "''") + "'"
+                        for g in groups.curated_labels())
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW allpub AS
+        SELECT regexp_extract(parse_filename(filename), '^([a-z]+)_fy', 1) AS program,
+               fiscal_year, employer_group, soc_group, title_group,
+               worksite_state, worksite_city,
+               upper(trim(worksite_city)) AS city_key, wage_annual,
+               (case_status ILIKE 'Certified%' OR
+                case_status ILIKE 'Determination Issued%') AS is_cert,
+               employer_name, soc_code, soc_title, job_title
+        FROM read_parquet([{files}], union_by_name=true, filename=true)
+    """)
+    # display labels: curated family names as-is, else the modal raw spelling.
+    # Several source years are ALL CAPS, so prefer a mixed-case spelling when
+    # one exists (FILTER mixed(...)) before falling back to the overall mode.
+    mixed = lambda c: f"(trim({c}) <> upper(trim({c})))"
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE lab_emp AS
+        SELECT employer_group AS k,
+               CASE WHEN employer_group IN ({curated}) THEN employer_group
+                    ELSE COALESCE(mode(employer_name) FILTER ({mixed('employer_name')}),
+                                  mode(employer_name)) END AS label
+        FROM allpub WHERE employer_group IS NOT NULL GROUP BY employer_group
+    """)
+    # prefer the group's own target-code title (modern SOC vintage) over the
+    # corpus-wide mode, which legacy vintages can outnumber
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE lab_soc AS
+        SELECT soc_group AS k,
+               COALESCE(mode(soc_title) FILTER (soc_code LIKE soc_group || '%'),
+                        mode(soc_title), soc_group) AS label
+        FROM allpub WHERE soc_group IS NOT NULL GROUP BY soc_group
+    """)
+    # prefer the spelling of titles that ARE the base title (not variants)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE lab_title AS
+        SELECT title_group AS k,
+               COALESCE(mode(job_title) FILTER (upper(trim(job_title)) = title_group
+                                                AND {mixed('job_title')}),
+                        mode(job_title) FILTER (upper(trim(job_title)) = title_group),
+                        mode(job_title), title_group) AS label
+        FROM allpub WHERE title_group IS NOT NULL GROUP BY title_group
+    """)
+
+    measures = """count(*)::BIGINT AS n,
+               count(*) FILTER (is_cert)::BIGINT AS n_cert,
+               round(median(wage_annual))::BIGINT AS median_wage"""
+    specs = {}
+    # per-dimension summaries: (key [, program] [, fy]) grains via grouping sets
+    for name, key, lab in (("employers", "employer_group", "lab_emp"),
+                           ("soc", "soc_group", "lab_soc"),
+                           ("titles", "title_group", "lab_title")):
+        specs[name] = f"""
+            SELECT l.label, a.* FROM (
+              SELECT {key} AS k, program, fiscal_year AS fy, {measures}
+              FROM allpub WHERE {key} IS NOT NULL
+              GROUP BY GROUPING SETS (({key}), ({key}, program), ({key}, fy),
+                                      ({key}, program, fy))
+            ) a JOIN {lab} l ON l.k = a.k
+            ORDER BY a.k, a.program NULLS FIRST, a.fy NULLS FIRST"""
+        specs[f"{name}_top"] = f"""
+            SELECT * FROM read_parquet('{(agg_dir / (name + '.parquet')).as_posix()}')
+            WHERE program IS NULL AND fy IS NULL ORDER BY n DESC"""
+    # pairwise drill cubes: all-years all-programs rollups, sorted by lead key
+    pair = lambda k1, k2, l1, l2: f"""
+        SELECT la.label AS label, lb.label AS label2, a.* FROM (
+          SELECT {k1} AS k, {k2} AS k2, {measures}
+          FROM allpub WHERE {k1} IS NOT NULL AND {k2} IS NOT NULL
+          GROUP BY 1, 2
+        ) a JOIN {l1} la ON la.k = a.k JOIN {l2} lb ON lb.k = a.k2
+        ORDER BY a.k, a.n DESC"""
+    specs["emp_soc"] = pair("employer_group", "soc_group", "lab_emp", "lab_soc")
+    specs["emp_title"] = pair("employer_group", "title_group", "lab_emp", "lab_title")
+    specs["soc_emp"] = pair("soc_group", "employer_group", "lab_soc", "lab_emp")
+    specs["title_emp"] = pair("title_group", "employer_group", "lab_title", "lab_emp")
+    loc = lambda k, l: f"""
+        SELECT la.label AS label, a.* FROM (
+          SELECT {k} AS k, worksite_state AS state, city_key,
+                 COALESCE(mode(worksite_city) FILTER ({mixed('worksite_city')}),
+                          mode(worksite_city)) AS city, {measures}
+          FROM allpub WHERE {k} IS NOT NULL AND worksite_state IS NOT NULL
+          GROUP BY GROUPING SETS (({k}, worksite_state),
+                                  ({k}, worksite_state, city_key))
+        ) a JOIN {l} la ON la.k = a.k
+        ORDER BY a.k, a.state, a.city_key NULLS FIRST"""
+    specs["emp_loc"] = loc("employer_group", "lab_emp")
+    specs["soc_loc"] = loc("soc_group", "lab_soc")
+
+    entries = {}
+    for name, sql in specs.items():
+        out = agg_dir / f"{name}.parquet"
+        con.execute(f"COPY ({sql}) TO '{out.as_posix()}' "
+                    f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 65536)")
+        rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
+        entries[name] = {"file": f"agg/{out.name}", "rows": rows,
+                         "bytes": out.stat().st_size}
+        print(f"aggregate      agg/{out.name}: {rows:,} rows, "
+              f"{out.stat().st_size/1e6:.1f} MB")
+    return entries
 
 
 def main() -> None:
@@ -697,9 +818,18 @@ def main() -> None:
     ap.add_argument("--stage-only", action="store_true")
     ap.add_argument("--republish", action="store_true",
                     help="skip staging, just rebuild web parquet from stage/")
+    ap.add_argument("--agg-only", action="store_true",
+                    help="rebuild only the aggregate files from published parquet")
     args = ap.parse_args()
     con = duckdb.connect()
     con.execute("INSTALL excel; LOAD excel;")
+    # let the materialized publish table spill to disk instead of OOMing
+    con.execute(f"SET temp_directory = '{(ROOT / 'data' / '.duckdb_tmp').as_posix()}'")
+    if args.agg_only:
+        manifest = json.loads((WEB_DATA / "datasets.json").read_text())
+        manifest["aggregates"] = publish_aggregates(con)
+        (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
+        return
     if not args.republish:
         stage_all(con)
     if not args.stage_only:
