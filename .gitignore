@@ -1,0 +1,8 @@
+# raw downloads and intermediate parquet (rebuildable via pipeline)
+data/raw/
+data/stage/
+
+.venv/
+node_modules/
+web/dist/
+.DS_Store

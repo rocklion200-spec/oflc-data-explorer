@@ -1,0 +1,148 @@
+{
+  "programs": {
+    "lca": [
+      {
+        "fy": 2020,
+        "file": "lca_fy2020.parquet",
+        "rows": 555872,
+        "bytes": 22689635
+      },
+      {
+        "fy": 2021,
+        "file": "lca_fy2021.parquet",
+        "rows": 503240,
+        "bytes": 21126493
+      },
+      {
+        "fy": 2022,
+        "file": "lca_fy2022.parquet",
+        "rows": 601019,
+        "bytes": 24604702
+      },
+      {
+        "fy": 2023,
+        "file": "lca_fy2023.parquet",
+        "rows": 525838,
+        "bytes": 22009563
+      },
+      {
+        "fy": 2024,
+        "file": "lca_fy2024.parquet",
+        "rows": 548146,
+        "bytes": 23175840
+      },
+      {
+        "fy": 2025,
+        "file": "lca_fy2025.parquet",
+        "rows": 588591,
+        "bytes": 24893354
+      },
+      {
+        "fy": 2026,
+        "file": "lca_fy2026.parquet",
+        "rows": 210363,
+        "bytes": 8771112
+      }
+    ],
+    "perm": [
+      {
+        "fy": 2019,
+        "file": "perm_fy2019.parquet",
+        "rows": 1,
+        "bytes": 4329
+      },
+      {
+        "fy": 2020,
+        "file": "perm_fy2020.parquet",
+        "rows": 93691,
+        "bytes": 3922371
+      },
+      {
+        "fy": 2021,
+        "file": "perm_fy2021.parquet",
+        "rows": 108349,
+        "bytes": 4456971
+      },
+      {
+        "fy": 2022,
+        "file": "perm_fy2022.parquet",
+        "rows": 104440,
+        "bytes": 4257646
+      },
+      {
+        "fy": 2023,
+        "file": "perm_fy2023.parquet",
+        "rows": 116155,
+        "bytes": 4636203
+      },
+      {
+        "fy": 2024,
+        "file": "perm_fy2024.parquet",
+        "rows": 114460,
+        "bytes": 4617980
+      },
+      {
+        "fy": 2025,
+        "file": "perm_fy2025.parquet",
+        "rows": 147055,
+        "bytes": 5521815
+      },
+      {
+        "fy": 2026,
+        "file": "perm_fy2026.parquet",
+        "rows": 60096,
+        "bytes": 2404281
+      }
+    ],
+    "pwd": [
+      {
+        "fy": 2019,
+        "file": "pwd_fy2019.parquet",
+        "rows": 354,
+        "bytes": 32487
+      },
+      {
+        "fy": 2020,
+        "file": "pwd_fy2020.parquet",
+        "rows": 166468,
+        "bytes": 7076111
+      },
+      {
+        "fy": 2021,
+        "file": "pwd_fy2021.parquet",
+        "rows": 160372,
+        "bytes": 6748969
+      },
+      {
+        "fy": 2022,
+        "file": "pwd_fy2022.parquet",
+        "rows": 187607,
+        "bytes": 7668866
+      },
+      {
+        "fy": 2023,
+        "file": "pwd_fy2023.parquet",
+        "rows": 254325,
+        "bytes": 10234729
+      },
+      {
+        "fy": 2024,
+        "file": "pwd_fy2024.parquet",
+        "rows": 237610,
+        "bytes": 9485329
+      },
+      {
+        "fy": 2025,
+        "file": "pwd_fy2025.parquet",
+        "rows": 249188,
+        "bytes": 10156465
+      },
+      {
+        "fy": 2026,
+        "file": "pwd_fy2026.parquet",
+        "rows": 97868,
+        "bytes": 4076420
+      }
+    ]
+  }
+}
