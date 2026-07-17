@@ -6,3 +6,5 @@ data/stage/
 node_modules/
 web/dist/
 .DS_Store
+__pycache__/
+.claude/scheduled_tasks.lock
