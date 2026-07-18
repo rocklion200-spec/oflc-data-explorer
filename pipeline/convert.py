@@ -16,6 +16,8 @@ The unified core schema lets one web UI serve LCA, PERM and PWD:
   wage_from, wage_to, wage_unit, wage_annual, pw_wage, pw_unit, pw_annual,
   pw_wage_level, full_time_position, begin_date, end_date, total_workers,
   fiscal_year
+PERM additionally stages pwd_number (the new form's ETA-9141 reference,
+used at publish time to backfill pw_* from staged pwd data).
 
 Usage:
     python pipeline/convert.py            # stage new files, then publish
@@ -181,6 +183,9 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "wage_unit": "JOB_OPP_WAGE_PER",
         "wage_annual": annual(n("JOB_OPP_WAGE_FROM"), "JOB_OPP_WAGE_PER"),
         "full_time_position": "OTHER_REQ_IS_FULLTIME_EMP",
+        # new form dropped the PW amount columns; it only references the
+        # ETA-9141 determination, resolved against staged pwd at publish time
+        "pwd_number": "JOB_OPP_PWD_NUMBER",
     },
     ("perm", "legacy"): {  # PERM files before the 2023 form change (FY2020-FY2024)
         "case_number": "CASE_NUMBER",
@@ -521,6 +526,8 @@ CORE_COLUMNS = [
     "wage_annual", "pw_wage", "pw_unit", "pw_annual", "pw_wage_level",
     "full_time_position", "begin_date", "end_date", "total_workers",
 ]
+# staged beyond the core schema for specific programs
+EXTRA_COLUMNS = {"perm": ["pwd_number"]}
 DATE_COLS = {"received_date", "decision_date", "begin_date", "end_date"}
 NUM_COLS = {"wage_from", "wage_to", "wage_annual", "pw_wage", "pw_annual"}
 INT_COLS = {"total_workers"}
@@ -613,7 +620,8 @@ def stage_file(con: duckdb.DuckDBPyConnection, path: Path, program: str,
             expr = norm_status(expr)
         return f"try_cast(({expr}) AS {col_type(c)}) AS {c}"
 
-    select = ",\n  ".join(target_expr(c) for c in CORE_COLUMNS)
+    select = ",\n  ".join(target_expr(c)
+                          for c in CORE_COLUMNS + EXTRA_COLUMNS.get(program, []))
     print(f"staging        {path.name} [{era}] ...", flush=True)
     con.execute(f"""
         COPY (
@@ -674,11 +682,13 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
                   PARTITION BY case_number
                   ORDER BY decision_date DESC NULLS LAST, source_file DESC
                 ) AS rn
-                FROM read_parquet([{files}])
+                FROM read_parquet([{files}], union_by_name=true)
               ) WHERE rn = 1
             )
             WHERE fiscal_year IS NOT NULL
         """)
+        if program == "perm":
+            link_perm_pwd(con)
         fys = [r[0] for r in con.execute(
             "SELECT DISTINCT fiscal_year FROM pub ORDER BY 1").fetchall()]
         prog_files = []
@@ -700,6 +710,41 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
     manifest["landing"] = build_landing(con)
     (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote          {(WEB_DATA / 'datasets.json').relative_to(ROOT)}")
+
+
+def link_perm_pwd(con: duckdb.DuckDBPyConnection) -> None:
+    """Fill pw_* on new-form PERM rows from their ETA-9141 determination.
+
+    New-form ETA-9089 files carry no PW amount columns, only
+    JOB_OPP_PWD_NUMBER (staged as pwd_number) referencing the PWD case.
+    Resolve it against staged pwd data, deduped by case number (annual pwd
+    files are cumulative). Old-form rows already carry pw values and are
+    left untouched via the pw_wage IS NULL guard.
+    """
+    staged = sorted((STAGE / "pwd").glob("*.parquet"))
+    if not staged:
+        return
+    files = ", ".join(f"'{p.as_posix()}'" for p in staged)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE pwd_ref AS
+        SELECT k, pw_wage, pw_unit, pw_annual, pw_wage_level FROM (
+          SELECT upper(trim(case_number)) AS k,
+                 pw_wage, pw_unit, pw_annual, pw_wage_level,
+                 row_number() OVER (
+                   PARTITION BY upper(trim(case_number))
+                   ORDER BY decision_date DESC NULLS LAST, source_file DESC
+                 ) AS rn
+          FROM read_parquet([{files}], union_by_name=true)
+        ) WHERE rn = 1
+    """)
+    n = con.execute("""
+        UPDATE pub SET pw_wage = r.pw_wage, pw_unit = r.pw_unit,
+                       pw_annual = r.pw_annual, pw_wage_level = r.pw_wage_level
+        FROM pwd_ref r
+        WHERE upper(trim(pub.pwd_number)) = r.k AND pub.pw_wage IS NULL
+    """).fetchone()[0]
+    con.execute("DROP TABLE pwd_ref")
+    print(f"pw from pwd    filled {n:,} new-form PERM rows via pwd_number")
 
 
 STATE_NAMES = {
