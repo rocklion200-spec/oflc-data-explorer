@@ -177,6 +177,21 @@ export default function App() {
     if (!manifest || !selectedYears) return;
     const id = ++topsRun.current;
     const stale = () => id !== topsRun.current;
+    // the landing page's charts ship inside datasets.json — render them
+    // synchronously, before DuckDB has even booted
+    if (selCount === 0 && manifest.landing) {
+      const entries = {};
+      for (const dim of topDims) {
+        entries[dim] = { scope: "cube", rows: (manifest.landing.tops[dim] || []).map((d) => ({
+          label: d.label, n: d.n, median_wage: d.median_wage,
+          sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label }
+            : { k: d.k, label: d.label },
+        })) };
+      }
+      setTops((t) => ({ ...t, ...entries }));
+      setTopsBusy(false);
+      return;
+    }
     // keep the previous charts visible (dimmed) while refetching so the page
     // doesn't collapse and shift under an open column-filter dropdown
     setTopsBusy(true);
@@ -248,8 +263,10 @@ export default function App() {
       // the wage chart out of the tiny program_stats file, and entity pages
       // get the table's record count from the summary cube — no row scans.
       let cubeWages = null;
-      if (unfiltered && cubes && mode === "home" && manifest.aggregates.program_stats) {
-        const all = await fetchProgramStats(manifest);
+      if (unfiltered && cubes && mode === "home"
+          && (manifest.landing?.stats || manifest.aggregates.program_stats)) {
+        // stats ship inside datasets.json (landing); parquet is the fallback
+        const all = manifest.landing?.stats || await fetchProgramStats(manifest);
         if (stale()) return;
         if (all) {
           const lo = Math.min(...selectedYears), hi = Math.max(...selectedYears);

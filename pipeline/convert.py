@@ -697,6 +697,7 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
         manifest["programs"][program] = prog_files
         con.execute("DROP TABLE pub")
     manifest["aggregates"] = publish_aggregates(con)
+    manifest["landing"] = build_landing(con)
     (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote          {(WEB_DATA / 'datasets.json').relative_to(ROOT)}")
 
@@ -875,6 +876,31 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     return entries
 
 
+# Everything the landing page renders goes straight into datasets.json so the
+# first paint doesn't wait for DuckDB-WASM to boot or fetch any parquet:
+# top-12 per dimension for the overview charts, plus the whole program_stats
+# cube (~64 rows) for the tiles and wage-distribution chart.
+def build_landing(con: duckdb.DuckDBPyConnection) -> dict:
+    agg_dir = WEB_DATA / "agg"
+
+    def rows(sql: str) -> list[dict]:
+        cur = con.execute(sql)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    tops = {}
+    for dim, name, cond in (("employer", "employers_top", ""),
+                            ("soc", "soc_top", ""),
+                            ("loc", "locations_top", "WHERE city_key IS NOT NULL")):
+        cols = ("k, label, state, city_key, n, median_wage" if dim == "loc"
+                else "k, label, n, median_wage")
+        tops[dim] = rows(f"SELECT {cols} FROM '{(agg_dir / (name + '.parquet')).as_posix()}' "
+                         f"{cond} LIMIT 12")
+    stats = rows(f"SELECT * FROM '{(agg_dir / 'program_stats.parquet').as_posix()}' "
+                 f"ORDER BY program, fy_lo, fy_hi")
+    return {"tops": tops, "stats": stats}
+
+
 def build_labels(con: duckdb.DuckDBPyConnection, mixed, curated: str) -> None:
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE lab_emp AS
@@ -922,6 +948,7 @@ def main() -> None:
         manifest = json.loads((WEB_DATA / "datasets.json").read_text())
         manifest["aggregates"] = {**manifest.get("aggregates", {}),
                                   **publish_aggregates(con, args.agg_only or None)}
+        manifest["landing"] = build_landing(con)
         (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
         return
     if not args.republish:
