@@ -109,33 +109,46 @@ export function whereClause(colFilters = {}, sel = {}) {
 
 const andWhere = (where, cond) => (where ? `${where} AND ${cond}` : `WHERE ${cond}`);
 
-export async function fetchStats(from, where, stale) {
-  const [r] = await query(`
-    SELECT count(*)::INT AS n,
-           count(DISTINCT employer_name)::INT AS employers,
-           round(median(wage_annual))::INT AS median_wage,
-           round(100.0 * count(*) FILTER (case_status ILIKE 'Certified%'
-                 OR case_status ILIKE 'Determination Issued%') / nullif(count(*),0), 1) AS pct_certified
-    FROM ${from} ${where}`, stale);
-  return r;
-}
+const CERT_FILTER = `case_status ILIKE 'Certified%'
+                 OR case_status ILIKE 'Determination Issued%'`;
 
-// Wage distribution per fiscal year for the box-style annual wage chart:
-// quartile box, 5th–95th percentile whiskers (raw min/max are outlier-prone
-// — a single $3M filing would flatten the chart — so they only go in the
-// tooltip).
-export async function fetchWageByYear(from, where, stale) {
-  return query(`
-    SELECT fiscal_year AS fy, count(*)::INT AS n,
+const WAGE_QUANTILES = `
+           count(wage_annual)::INT AS nw,
            round(min(wage_annual))::INT AS lo,
            round(quantile_cont(wage_annual, 0.05))::INT AS p05,
            round(quantile_cont(wage_annual, 0.25))::INT AS p25,
            round(median(wage_annual))::INT AS p50,
            round(quantile_cont(wage_annual, 0.75))::INT AS p75,
            round(quantile_cont(wage_annual, 0.95))::INT AS p95,
-           round(max(wage_annual))::INT AS hi
-    FROM ${from} ${andWhere(where, "wage_annual IS NOT NULL")}
-    GROUP BY 1 ORDER BY 1`, stale);
+           round(max(wage_annual))::INT AS hi`;
+
+// Header tiles and the per-FY wage distribution (quartile box, 5th–95th
+// percentile whiskers — raw min/max are outlier-prone, a single $3M filing
+// would flatten the chart, so they only go in the tooltip) come out of ONE
+// row-level scan: an overall grouping-set row plus one row per fiscal year.
+// Scans dominate load time over HTTP, so never pay for the same one twice.
+export async function fetchOverview(from, where, withWages, stale) {
+  const measures = `
+           count(*)::INT AS n,
+           count(DISTINCT employer_name)::INT AS employers,
+           round(median(wage_annual))::INT AS median_wage,
+           round(100.0 * count(*) FILTER (${CERT_FILTER})
+                 / nullif(count(*),0), 1) AS pct_certified`;
+  if (!withWages) {
+    const [r] = await query(`SELECT ${measures} FROM ${from} ${where}`, stale);
+    return { stats: r, wages: [] };
+  }
+  const rows = await query(`
+    SELECT (GROUPING(fiscal_year) = 0) AS by_fy, fiscal_year AS fy,
+           ${measures}, ${WAGE_QUANTILES}
+    FROM ${from} ${where}
+    GROUP BY GROUPING SETS ((), (fiscal_year))
+    ORDER BY by_fy, fy`, stale);
+  return {
+    stats: rows.find((r) => !r.by_fy) || null,
+    wages: rows.filter((r) => r.by_fy && r.nw > 0)
+      .map((r) => ({ ...r, n: r.nw })),
+  };
 }
 
 export async function fetchRows(from, where, sort, page, pageSize, stale) {
@@ -223,6 +236,35 @@ export async function searchGroups(manifest, text, stale, perDim = 5) {
 
 const SUMMARY_FILE = { employer: "employers", soc: "soc", title: "titles" };
 
+// Home-page tiles + wage chart without any row-level scan: the program_stats
+// cube has one row per (program, fy) plus preset ranges (all years, last 2,
+// last 5). It's ~70 rows, so it's fetched once and kept in memory.
+let programStatsCache = null;
+export function fetchProgramStats(manifest) {
+  if (!programStatsCache) {
+    programStatsCache = (async () => {
+      const from = await aggFrom(manifest, "program_stats");
+      if (!from) return null;
+      return query(`SELECT * FROM ${from}`);
+    })();
+    programStatsCache.catch(() => { programStatsCache = null; }); // allow retry
+  }
+  return programStatsCache;
+}
+
+// Entity-page record count for the table pager, summed from the summary
+// cube's (k, program, fy) rows instead of scanning row-level parquet. Only
+// valid when no column filters are active.
+export async function fetchEntityCount(manifest, dim, key, program, years, stale) {
+  const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
+  if (!from) return null;
+  const [r] = await query(`
+    SELECT coalesce(sum(n), 0)::INT AS n FROM ${from}
+    WHERE k = '${esc(key)}' AND program = '${esc(program)}'
+      AND fy BETWEEN ${Math.min(...years)} AND ${Math.max(...years)}`, stale);
+  return r?.n ?? 0;
+}
+
 // One fetch returns everything the entity page header needs: the all-years
 // all-programs rollup, per-program rollups, and the per-FY trend.
 export async function fetchEntitySummary(manifest, dim, key, stale) {
@@ -262,12 +304,42 @@ export async function fetchOverviewTop(manifest, name, stale, limit = 12, cond =
     `SELECT * FROM ${from} ${cond ? `WHERE ${cond}` : ""} LIMIT ${limit}`, stale);
 }
 
-// Row-level top-N for the combined drill view (2+ selections), one query per
-// unselected dimension. labelExpr turns group keys into readable labels.
-export async function fetchTopGroups(from, where, col, labelExpr, stale, limit = 10) {
-  return query(`
-    SELECT ${col} AS k, ${labelExpr} AS label, count(*)::INT AS n,
-           round(median(wage_annual))::INT AS median_wage
-    FROM ${from} ${andWhere(where, `${col} IS NOT NULL`)}
-    GROUP BY 1 ORDER BY n DESC LIMIT ${limit}`, stale);
+// Row-level top-N for the combined drill view (2+ selections). All requested
+// dimensions share ONE scan via grouping sets; ranking happens per set with a
+// window so each dimension gets its own top-N. labelExpr turns group keys
+// into readable labels. Returns { dim: [{k, label, n, median_wage}] }.
+export async function fetchTopGroupsMulti(from, where, dims, stale, limit = 10) {
+  if (!dims.length) return {};
+  const keyCols = dims.map((d) => `${d.col} AS k_${d.dim}`);
+  const labCols = dims.map((d) => `${d.labelExpr} AS lab_${d.dim}`);
+  const sets = dims.map((d) => `(${d.col})`).join(", ");
+  // per-set NULL keys (rows missing that column) would otherwise rank first
+  const notNull = dims
+    .map((d) => `(GROUPING(${d.col}) = 1 OR ${d.col} IS NOT NULL)`)
+    .join(" AND ");
+  const rows = await query(`
+    SELECT * FROM (
+      SELECT g.*, row_number() OVER (PARTITION BY gid ORDER BY n DESC) AS rn
+      FROM (
+        SELECT GROUPING_ID(${dims.map((d) => d.col).join(", ")}) AS gid,
+               ${dims.map((d) => `(GROUPING(${d.col}) = 0) AS is_${d.dim}`).join(", ")},
+               ${keyCols.join(", ")}, ${labCols.join(", ")},
+               count(*)::INT AS n,
+               round(median(wage_annual))::INT AS median_wage
+        FROM ${from} ${where}
+        GROUP BY GROUPING SETS (${sets})
+        HAVING ${notNull}
+      ) g
+    ) WHERE rn <= ${limit}
+    ORDER BY gid, rn`, stale);
+  const out = {};
+  for (const d of dims) out[d.dim] = [];
+  for (const r of rows) {
+    const d = dims.find((d) => r[`is_${d.dim}`]);
+    if (d) out[d.dim].push({
+      k: r[`k_${d.dim}`], label: r[`lab_${d.dim}`],
+      n: r.n, median_wage: r.median_wage,
+    });
+  }
+  return out;
 }

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadManifest, isStale } from "./db.js";
 import {
-  scope, whereClause, fetchStats, fetchWageByYear, fetchRows, fetchColumnValues,
-  hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroups, fetchEntityTop,
+  scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
+  hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
+  fetchEntityTop, fetchProgramStats, fetchEntityCount,
 } from "./queries.js";
 import { ProgramTabs, YearRange } from "./components/Filters.jsx";
 import { ResultsTable, loadColumns } from "./components/ResultsTable.jsx";
@@ -182,7 +183,7 @@ export default function App() {
     (async () => {
       const cubes = hasAggregates(manifest);
       const cubeDim = selCount === 1 && soleDim !== "loc" && cubes ? soleDim : null;
-      let from = null, where = "";
+      const rowDims = [];
       for (const dim of topDims) {
         let entry;
         if (selCount === 0 && cubes && OVERVIEW_FILES[dim]) {
@@ -202,22 +203,30 @@ export default function App() {
               : { k: d.k2, label: d.label2 },
           })) };
         } else {
-          if (from == null) {
-            from = (await scope(manifest, program, selectedYears)) || "";
-            if (stale()) return;
-            where = whereClause(debouncedColFilters, sel);
-          }
-          const spec = ROW_CHARTS[dim];
-          const r = from
-            ? await fetchTopGroups(from, where, spec.col, spec.labelExpr, stale) : [];
-          entry = { scope: "rows", rows: r.map((d) => ({
+          rowDims.push(dim);
+          continue;
+        }
+        if (stale()) return;
+        setTops((t) => ({ ...t, [dim]: entry }));
+      }
+      // all remaining dimensions come out of one row-level scan
+      if (rowDims.length) {
+        const from = (await scope(manifest, program, selectedYears)) || "";
+        if (stale()) return;
+        const where = whereClause(debouncedColFilters, sel);
+        const res = from
+          ? await fetchTopGroupsMulti(from, where,
+              rowDims.map((dim) => ({ dim, ...ROW_CHARTS[dim] })), stale)
+          : {};
+        if (stale()) return;
+        for (const dim of rowDims) {
+          const entry = { scope: "rows", rows: (res[dim] || []).map((d) => ({
             label: d.label ?? d.k, n: d.n, median_wage: d.median_wage,
             sel: dim === "loc" ? locSelFromKey(d.k, d.label ?? d.k)
               : { k: d.k, label: d.label ?? d.k },
           })) };
+          setTops((t) => ({ ...t, [dim]: entry }));
         }
-        if (stale()) return;
-        setTops((t) => ({ ...t, [dim]: entry }));
       }
       if (!stale()) setTopsBusy(false);
     })().catch((e) => {
@@ -233,18 +242,53 @@ export default function App() {
     const stale = () => id !== aggRun.current;
     setAggBusy(true);
     (async () => {
+      const cubes = hasAggregates(manifest);
+      const unfiltered = whereClause(debouncedColFilters, {}) === "";
+      // Cube fast paths (no column filters): the landing page reads tiles and
+      // the wage chart out of the tiny program_stats file, and entity pages
+      // get the table's record count from the summary cube — no row scans.
+      let cubeWages = null;
+      if (unfiltered && cubes && mode === "home" && manifest.aggregates.program_stats) {
+        const all = await fetchProgramStats(manifest);
+        if (stale()) return;
+        if (all) {
+          const lo = Math.min(...selectedYears), hi = Math.max(...selectedYears);
+          const mine = all.filter((r) => r.program === program);
+          cubeWages = mine
+            .filter((r) => r.fy_lo === r.fy_hi && r.fy_lo >= lo && r.fy_hi <= hi && r.nw > 0)
+            .map((r) => ({ fy: r.fy_lo, ...r, n: r.nw }));
+          const exact = mine.find((r) => r.fy_lo === lo && r.fy_hi === hi);
+          if (exact) {
+            setStats({ ...exact,
+              pct_certified: exact.n ? Math.round((1000 * exact.n_cert) / exact.n) / 10 : null });
+            setWages(cubeWages);
+            setError(null); setAggBusy(false);
+            return;
+          }
+          // custom year range: the per-fy chart rows are still exact — only
+          // the tiles need a row-level pass below
+          setWages(cubeWages);
+        }
+      }
+      if (unfiltered && cubes && mode === "entity") {
+        const n = await fetchEntityCount(manifest, soleDim, sel[soleDim].k,
+          program, selectedYears, stale);
+        if (stale()) return;
+        if (n != null) {
+          setStats({ n }); setWages([]);
+          setError(null); setAggBusy(false);
+          return;
+        }
+      }
       const from = await scope(manifest, program, selectedYears);
       if (stale()) return;
       if (!from) { setStats(null); setWages([]); setAggBusy(false); return; }
       const where = whereClause(debouncedColFilters, sel);
-      const s = await fetchStats(from, where, stale);
+      const withWages = mode !== "entity" && !cubeWages;
+      const { stats: s, wages: w } = await fetchOverview(from, where, withWages, stale);
       if (stale()) return;
       setStats(s);
-      if (mode !== "entity") {
-        const t = await fetchWageByYear(from, where, stale);
-        if (stale()) return;
-        setWages(t);
-      }
+      if (withWages) setWages(w);
       setError(null); setAggBusy(false);
     })().catch((e) => {
       if (isStale(e)) return;
