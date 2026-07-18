@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtNum } from "./charts.jsx";
 
-const DIM_LABELS = { employer: "Employers", soc: "Roles (SOC)", title: "Job titles" };
+const DIM_LABELS = { employer: "Employers", soc: "Roles (SOC)", title: "Job titles", loc: "Locations" };
 
 // The primary navigation: one search box over all group dimensions.
 // Suggestions come from the precomputed group index (searchGroups), shown in
@@ -62,7 +62,7 @@ export function SearchHero({ search, onPick }) {
   return (
     <div className="hero" ref={boxRef}>
       <input type="search" className="hero-input" autoComplete="off"
-        placeholder="Search an employer, role, or job title — e.g. Goldman Sachs, Software Developers"
+        placeholder="Search an employer, role, job title, or location — e.g. Goldman Sachs, Austin"
         value={text}
         onChange={(e) => { setText(e.target.value); setOpen(true); load(e.target.value); }}
         onFocus={() => { setOpen(true); load(text, 0); }}

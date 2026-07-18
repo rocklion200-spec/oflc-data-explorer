@@ -1,6 +1,3 @@
-import { useEffect, useRef, useState } from "react";
-import { fmtNum } from "./charts.jsx";
-
 const PROGRAM_LABELS = { lca: "LCA (H-1B, H-1B1, E-3)", perm: "PERM", pwd: "Prevailing Wage" };
 
 export function ProgramTabs({ programs, program, onChange }) {
@@ -16,69 +13,7 @@ export function ProgramTabs({ programs, program, onChange }) {
   );
 }
 
-// Text input with async suggestions. Free text stays a partial match; picking
-// a suggestion fills in that spelling (still ILIKE) — unless onPickItem is
-// given (group suggestions), in which case picking selects the group instead.
-function Autocomplete({ label, placeholder, value, onChange, suggest, onPickItem }) {
-  const [items, setItems] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
-  const seq = useRef(0);
-  const timer = useRef(null);
-  const boxRef = useRef(null);
-
-  const load = (text, delay = 250) => {
-    const id = ++seq.current; // invalidates any in-flight fetch immediately
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      suggest(text, () => id !== seq.current)
-        .then((rows) => { if (id === seq.current) { setItems(rows); setActive(-1); } })
-        .catch(() => {});
-    }, delay);
-  };
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  useEffect(() => {
-    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, []);
-
-  const pick = (it) => {
-    if (onPickItem) onPickItem(it); else onChange(it.v);
-    setOpen(false);
-  };
-  const onKey = (e) => {
-    if (!open || !items.length) return;
-    if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(a + 1, items.length - 1)); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, -1)); }
-    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(items[active]); }
-    else if (e.key === "Escape") setOpen(false);
-  };
-
-  return (
-    <label className="combo" ref={boxRef}>{label}
-      <input type="search" placeholder={placeholder} value={value}
-        onChange={(e) => { onChange(e.target.value); setOpen(true); load(e.target.value); }}
-        onFocus={() => { setOpen(true); load(value, 0); }}
-        onKeyDown={onKey} autoComplete="off" />
-      {open && items.length > 0 && (
-        <ul className="combo-list" role="listbox">
-          {items.map((it, i) => (
-            <li key={it.v} role="option" aria-selected={i === active}
-              className={i === active ? "active" : ""}
-              onMouseDown={(e) => { e.preventDefault(); pick(it); }}>
-              <span className="v">{it.v}</span>
-              <span className="n">{fmtNum(it.n)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </label>
-  );
-}
-
-function YearRange({ years, selectedYears, onYears }) {
+export function YearRange({ years, selectedYears, onYears }) {
   if (!years.length) return null;
   const lo = selectedYears[0], hi = selectedYears[selectedYears.length - 1];
   const setRange = (from, to) => {
@@ -111,54 +46,6 @@ function YearRange({ years, selectedYears, onYears }) {
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-export function Filters({ years, selectedYears, onYears, filters, onFilters, options, program,
-  suggest, onPickGroup }) {
-  const set = (k) => (e) => onFilters({ ...filters, [k]: e.target.value });
-  const setVal = (k) => (v) => onFilters({ ...filters, [k]: v });
-  const sug = (field, col) => (text, stale) => suggest(field, col, text, stale);
-  // suggestions for these fields are groups; picking one selects the group
-  const pickG = (field) => onPickGroup ? (it) => onPickGroup(field, it) : undefined;
-  return (
-    <div className="panel">
-      <h2>Filters</h2>
-      <div className="filters">
-        <Autocomplete label="Employer name" placeholder="e.g. Google" value={filters.employer}
-          onChange={setVal("employer")} suggest={sug("employer", "employer_name")}
-          onPickItem={pickG("employer")} />
-        <Autocomplete label="Job title" placeholder="e.g. Software Engineer" value={filters.jobTitle}
-          onChange={setVal("jobTitle")} suggest={sug("jobTitle", "job_title")}
-          onPickItem={pickG("jobTitle")} />
-        <Autocomplete label="SOC code or title" placeholder="e.g. 15-1252 or Developers" value={filters.soc}
-          onChange={setVal("soc")} suggest={sug("soc", "soc_title")}
-          onPickItem={pickG("soc")} />
-        <label>Worksite state
-          <select value={filters.state} onChange={set("state")}>
-            <option value="">All states</option>
-            {options.states.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </label>
-        <Autocomplete label="Worksite city" placeholder="e.g. Austin" value={filters.city}
-          onChange={setVal("city")} suggest={sug("city", "worksite_city")} />
-        <label>Case status
-          <select value={filters.status} onChange={set("status")}>
-            <option value="">All statuses</option>
-            {options.statuses.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </label>
-        {program !== "perm" && (
-          <label>Visa class
-            <select value={filters.visaClass} onChange={set("visaClass")}>
-              <option value="">All visa classes</option>
-              {options.visaClasses.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-        )}
-      </div>
-      <YearRange years={years} selectedYears={selectedYears} onYears={onYears} />
     </div>
   );
 }

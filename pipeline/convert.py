@@ -701,12 +701,35 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
     print(f"wrote          {(WEB_DATA / 'datasets.json').relative_to(ROOT)}")
 
 
+STATE_NAMES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "DC": "District of Columbia", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana",
+    "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan",
+    "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri", "MT": "Montana",
+    "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+    "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
+    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
+    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+    "PR": "Puerto Rico", "GU": "Guam", "VI": "U.S. Virgin Islands",
+    "MP": "Northern Mariana Islands", "AS": "American Samoa",
+}
+
+
 # The precomputed aggregate ("cube") files that power the drill-down UI.
 # Summaries carry program/fiscal-year grain plus GROUPING SETS rollups (so
 # all-years/all-programs medians are exact); pairwise cubes are all-years
 # rollups only, sorted by their leading key so DuckDB-WASM's HTTP range
 # reads prune to one or two row groups per entity lookup.
-def publish_aggregates(con: duckdb.DuckDBPyConnection) -> dict:
+# `only` limits the rebuild to the named files (labels are skipped when the
+# selected specs don't join them).
+def publish_aggregates(con: duckdb.DuckDBPyConnection,
+                       only: list[str] | None = None) -> dict:
     agg_dir = WEB_DATA / "agg"
     agg_dir.mkdir(parents=True, exist_ok=True)
     row_files = sorted(WEB_DATA.glob("*_fy*.parquet"))
@@ -728,33 +751,9 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection) -> dict:
     # Several source years are ALL CAPS, so prefer a mixed-case spelling when
     # one exists (FILTER mixed(...)) before falling back to the overall mode.
     mixed = lambda c: f"(trim({c}) <> upper(trim({c})))"
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE lab_emp AS
-        SELECT employer_group AS k,
-               CASE WHEN employer_group IN ({curated}) THEN employer_group
-                    ELSE COALESCE(mode(employer_name) FILTER ({mixed('employer_name')}),
-                                  mode(employer_name)) END AS label
-        FROM allpub WHERE employer_group IS NOT NULL GROUP BY employer_group
-    """)
-    # prefer the group's own target-code title (modern SOC vintage) over the
-    # corpus-wide mode, which legacy vintages can outnumber
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE lab_soc AS
-        SELECT soc_group AS k,
-               COALESCE(mode(soc_title) FILTER (soc_code LIKE soc_group || '%'),
-                        mode(soc_title), soc_group) AS label
-        FROM allpub WHERE soc_group IS NOT NULL GROUP BY soc_group
-    """)
-    # prefer the spelling of titles that ARE the base title (not variants)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE lab_title AS
-        SELECT title_group AS k,
-               COALESCE(mode(job_title) FILTER (upper(trim(job_title)) = title_group
-                                                AND {mixed('job_title')}),
-                        mode(job_title) FILTER (upper(trim(job_title)) = title_group),
-                        mode(job_title), title_group) AS label
-        FROM allpub WHERE title_group IS NOT NULL GROUP BY title_group
-    """)
+    needs_labels = only is None or bool(set(only) - {"locations_top"})
+    if needs_labels:
+        build_labels(con, mixed, curated)
 
     measures = """count(*)::BIGINT AS n,
                count(*) FILTER (is_cert)::BIGINT AS n_cert,
@@ -799,6 +798,33 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection) -> dict:
         ORDER BY a.k, a.state, a.city_key NULLS FIRST"""
     specs["emp_loc"] = loc("employer_group", "lab_emp")
     specs["soc_loc"] = loc("soc_group", "lab_soc")
+    # location search/landing index: one row per city plus statewide rollups,
+    # labelled with full state names so "texas" finds TX. k encodes the drill
+    # selection: 'CITYKEY|ST' for cities, bare 'ST' for statewide.
+    sn = ", ".join(f"('{c}', '{n}')" for c, n in STATE_NAMES.items())
+    specs["locations_top"] = f"""
+        SELECT CASE WHEN a.is_state THEN a.state
+                    ELSE a.city_key || '|' || a.state END AS k,
+               CASE WHEN a.is_state THEN COALESCE(sn.name, a.state) || ' (statewide)'
+                    ELSE a.city || ', ' || a.state END AS label,
+               a.state, CASE WHEN a.is_state THEN NULL ELSE a.city_key END AS city_key,
+               a.n, a.n_cert, a.median_wage
+        FROM (
+          SELECT worksite_state AS state, city_key,
+                 GROUPING(city_key) = 1 AS is_state,
+                 COALESCE(mode(worksite_city) FILTER ({mixed('worksite_city')}),
+                          mode(worksite_city)) AS city, {measures}
+          FROM allpub WHERE worksite_state IS NOT NULL
+          GROUP BY GROUPING SETS ((worksite_state), (worksite_state, city_key))
+        ) a LEFT JOIN (VALUES {sn}) sn(code, name) ON sn.code = a.state
+        WHERE a.is_state OR a.city_key IS NOT NULL
+        ORDER BY a.n DESC"""
+
+    if only:
+        unknown = set(only) - specs.keys()
+        if unknown:
+            raise SystemExit(f"unknown aggregate(s): {', '.join(sorted(unknown))}")
+        specs = {name: specs[name] for name in only}
 
     entries = {}
     for name, sql in specs.items():
@@ -813,21 +839,53 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection) -> dict:
     return entries
 
 
+def build_labels(con: duckdb.DuckDBPyConnection, mixed, curated: str) -> None:
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE lab_emp AS
+        SELECT employer_group AS k,
+               CASE WHEN employer_group IN ({curated}) THEN employer_group
+                    ELSE COALESCE(mode(employer_name) FILTER ({mixed('employer_name')}),
+                                  mode(employer_name)) END AS label
+        FROM allpub WHERE employer_group IS NOT NULL GROUP BY employer_group
+    """)
+    # prefer the group's own target-code title (modern SOC vintage) over the
+    # corpus-wide mode, which legacy vintages can outnumber
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE lab_soc AS
+        SELECT soc_group AS k,
+               COALESCE(mode(soc_title) FILTER (soc_code LIKE soc_group || '%'),
+                        mode(soc_title), soc_group) AS label
+        FROM allpub WHERE soc_group IS NOT NULL GROUP BY soc_group
+    """)
+    # prefer the spelling of titles that ARE the base title (not variants)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE lab_title AS
+        SELECT title_group AS k,
+               COALESCE(mode(job_title) FILTER (upper(trim(job_title)) = title_group
+                                                AND {mixed('job_title')}),
+                        mode(job_title) FILTER (upper(trim(job_title)) = title_group),
+                        mode(job_title), title_group) AS label
+        FROM allpub WHERE title_group IS NOT NULL GROUP BY title_group
+    """)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage-only", action="store_true")
     ap.add_argument("--republish", action="store_true",
                     help="skip staging, just rebuild web parquet from stage/")
-    ap.add_argument("--agg-only", action="store_true",
-                    help="rebuild only the aggregate files from published parquet")
+    ap.add_argument("--agg-only", nargs="*", default=None, metavar="NAME",
+                    help="rebuild only the aggregate files from published "
+                         "parquet (optionally just the named ones)")
     args = ap.parse_args()
     con = duckdb.connect()
     con.execute("INSTALL excel; LOAD excel;")
     # let the materialized publish table spill to disk instead of OOMing
     con.execute(f"SET temp_directory = '{(ROOT / 'data' / '.duckdb_tmp').as_posix()}'")
-    if args.agg_only:
+    if args.agg_only is not None:
         manifest = json.loads((WEB_DATA / "datasets.json").read_text())
-        manifest["aggregates"] = publish_aggregates(con)
+        manifest["aggregates"] = {**manifest.get("aggregates", {}),
+                                  **publish_aggregates(con, args.agg_only or None)}
         (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
         return
     if not args.republish:

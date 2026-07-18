@@ -63,9 +63,18 @@ function datePredicate(col, raw) {
   return null;
 }
 
+// Text columns carry an Excel-style filter object: checked values win over
+// the typed text (which otherwise applies as a contains match).
 function columnPredicate(col, raw) {
+  if (!(col in COLUMN_TYPES)) return null;
+  if (raw && typeof raw === "object") {
+    if (raw.values?.length) {
+      return `${col} IN (${raw.values.map((v) => `'${esc(v)}'`).join(",")})`;
+    }
+    raw = raw.text || "";
+  }
   const v = raw.trim();
-  if (!v || !(col in COLUMN_TYPES)) return null;
+  if (!v) return null;
   const type = COLUMN_TYPES[col];
   if (type === "num") return numPredicate(col, v);
   if (type === "date") return datePredicate(col, v);
@@ -85,15 +94,8 @@ export function selClause(sel = {}) {
   return w;
 }
 
-export function whereClause(f, colFilters = {}, sel = {}) {
+export function whereClause(colFilters = {}, sel = {}) {
   const w = selClause(sel);
-  if (f.employer) w.push(`(employer_name ILIKE '%${esc(f.employer)}%')`);
-  if (f.jobTitle) w.push(`(job_title ILIKE '%${esc(f.jobTitle)}%')`);
-  if (f.soc) w.push(`(soc_code ILIKE '%${esc(f.soc)}%' OR soc_title ILIKE '%${esc(f.soc)}%')`);
-  if (f.state) w.push(`worksite_state = '${esc(f.state)}'`);
-  if (f.city) w.push(`(worksite_city ILIKE '%${esc(f.city)}%')`);
-  if (f.status) w.push(`case_status = '${esc(f.status)}'`);
-  if (f.visaClass) w.push(`visa_class = '${esc(f.visaClass)}'`);
   for (const [col, raw] of Object.entries(colFilters)) {
     const pred = columnPredicate(col, raw);
     if (pred) w.push(`(${pred})`);
@@ -123,13 +125,6 @@ export async function fetchTrend(from, where, stale) {
     GROUP BY 1 ORDER BY 1`, stale);
 }
 
-export async function fetchTopEmployers(from, where, stale, limit = 15) {
-  return query(`
-    SELECT employer_name, count(*)::INT AS n, round(median(wage_annual))::INT AS median_wage
-    FROM ${from} ${andWhere(where, "employer_name IS NOT NULL")}
-    GROUP BY 1 ORDER BY n DESC LIMIT ${limit}`, stale);
-}
-
 export async function fetchRows(from, where, sort, page, pageSize, stale) {
   return query(`
     SELECT case_number, case_status, visa_class,
@@ -150,17 +145,9 @@ export async function fetchRows(from, where, sort, page, pageSize, stale) {
     LIMIT ${pageSize} OFFSET ${page * pageSize}`, stale);
 }
 
-export async function fetchOptions(from, col, stale) {
-  const rows = await query(
-    `SELECT DISTINCT ${col} AS v FROM ${from} WHERE ${col} IS NOT NULL ORDER BY 1 LIMIT 200`,
-    stale);
-  return rows.map((r) => r.v);
-}
-
-// Autocomplete: distinct values of `col` matching the typed text, under every
-// other active filter, most frequent first. Values remain partial-match
-// filters when applied, so picking a suggestion never narrows to one spelling.
-export async function fetchSuggestions(from, where, col, text, stale, limit = 12) {
+// Excel-style column filter values: distinct values of `col` matching the
+// typed text, under every other active filter, most frequent first.
+export async function fetchColumnValues(from, where, col, text, stale, limit = 50) {
   const cond = text
     ? `${col} IS NOT NULL AND ${col} ILIKE '%${esc(text)}%'`
     : `${col} IS NOT NULL`;
@@ -185,7 +172,7 @@ async function aggFrom(manifest, name) {
 
 export const hasAggregates = (manifest) => !!manifest.aggregates;
 
-// Unified group search: the three *_top files (one row per group, ordered by
+// Unified group search: the *_top files (one row per group, ordered by
 // size) are loaded once into a local table so every keystroke is in-memory.
 let searchReady = null;
 export function ensureSearchTable(manifest) {
@@ -193,7 +180,8 @@ export function ensureSearchTable(manifest) {
     searchReady = (async () => {
       const parts = [];
       for (const [dim, name] of [["employer", "employers_top"],
-                                 ["soc", "soc_top"], ["title", "titles_top"]]) {
+                                 ["soc", "soc_top"], ["title", "titles_top"],
+                                 ["loc", "locations_top"]]) {
         const from = await aggFrom(manifest, name);
         if (from) parts.push(`SELECT '${dim}' AS dim, k, label, n FROM ${from}`);
       }
@@ -215,19 +203,9 @@ export async function searchGroups(manifest, text, stale, perDim = 5) {
       SELECT *, row_number() OVER (PARTITION BY dim ORDER BY n DESC) AS rn
       FROM search_groups ${cond}
     ) WHERE rn <= ${perDim}
-    ORDER BY CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1 ELSE 2 END, n DESC`,
+    ORDER BY CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1
+             WHEN 'title' THEN 2 ELSE 3 END, n DESC`,
     stale);
-}
-
-// Group suggestions for a single dimension (filter-panel autocompletes).
-export async function searchGroupsIn(manifest, dim, text, stale, limit = 12) {
-  await ensureSearchTable(manifest);
-  const t = esc(text);
-  const cond = t ? `AND (label ILIKE '%${t}%' OR k ILIKE '%${t}%')` : "";
-  const rows = await query(`
-    SELECT k, label, n FROM search_groups
-    WHERE dim = '${dim}' ${cond} ORDER BY n DESC LIMIT ${limit}`, stale);
-  return rows.map((r) => ({ v: r.label, ...r }));
 }
 
 const SUMMARY_FILE = { employer: "employers", soc: "soc", title: "titles" };
@@ -261,12 +239,14 @@ export async function fetchEntityTop(manifest, cube, key, stale, limit = 12) {
     FROM ${from} WHERE k = '${esc(key)}' ORDER BY n DESC LIMIT ${limit}`, stale);
 }
 
-// Landing-page overview: first rows of the ordered *_top files.
-export async function fetchOverviewTop(manifest, name, stale, limit = 12) {
+// Landing-page overview: first rows of the ordered *_top files (already
+// sorted by n DESC, so LIMIT stops after the first row group). `cond` lets
+// the locations chart keep to cities (statewide rollups would crowd it out).
+export async function fetchOverviewTop(manifest, name, stale, limit = 12, cond = null) {
   const from = await aggFrom(manifest, name);
   if (!from) return [];
   return query(
-    `SELECT k, label, n, median_wage FROM ${from} LIMIT ${limit}`, stale);
+    `SELECT * FROM ${from} ${cond ? `WHERE ${cond}` : ""} LIMIT ${limit}`, stale);
 }
 
 // Row-level top-N for the combined drill view (2+ selections), one query per

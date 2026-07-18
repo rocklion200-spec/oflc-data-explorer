@@ -59,28 +59,8 @@ header.app .sub { color: var(--text-muted); font-size: 13px; }
 }
 .panel h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 0 0 10px; }
 
-.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-.filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
-.filters input, .filters select {
-  border: 1px solid var(--border); background: var(--page); color: var(--text-primary);
-  border-radius: 7px; padding: 7px 9px; font-size: 14px; width: 100%;
-}
-.filters input:focus, .filters select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-
-.combo { position: relative; }
-.combo-list {
-  position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin: 4px 0 0; padding: 4px;
-  list-style: none; background: var(--surface-1); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-  max-height: 280px; overflow-y: auto;
-}
-.combo-list li {
-  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
-  padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
-}
-.combo-list li:hover, .combo-list li.active { background: var(--hover-wash); }
-.combo-list .v { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.combo-list .n { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.year-panel { padding: 10px 14px; }
+.year-panel .year-range { margin-top: 0; }
 
 .year-range { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 .year-range .year-label { font-size: 12px; color: var(--text-secondary); }
@@ -106,6 +86,16 @@ header.app .sub { color: var(--text-muted); font-size: 13px; }
 
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
+
+.top-charts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px; margin-bottom: 14px;
+}
+.top-charts .panel { margin-bottom: 0; }
+.scope-note {
+  font-weight: 400; color: var(--text-muted); font-size: 11px;
+  margin-left: 7px; text-transform: uppercase; letter-spacing: 0.04em;
+}
 .charts .panel, .panel { min-width: 0; }
 .panel svg { display: block; max-width: 100%; }
 
@@ -168,11 +158,38 @@ tr.col-filter-row th {
   position: sticky; top: 33px; padding: 3px 6px 8px; cursor: default;
   background: var(--surface-1);
 }
-tr.col-filter-row input {
+tr.col-filter-row input[type="search"] {
   width: 100%; min-width: 72px; border: 1px solid var(--border); background: var(--page);
   color: var(--text-primary); border-radius: 6px; padding: 4px 7px; font-size: 12px;
 }
-tr.col-filter-row input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+tr.col-filter-row input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+tr.col-filter-row input[type="search"].has-sel {
+  border-color: var(--accent); background: var(--series-1-wash);
+}
+
+.val-filter { position: relative; }
+.val-list {
+  position: fixed; z-index: 50; width: 264px; max-height: 320px; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22); padding: 6px;
+}
+.val-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 4px 7px 6px;
+}
+.val-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 7px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 400;
+}
+.val-item:hover { background: var(--hover-wash); }
+.val-item input { flex: none; margin: 0; accent-color: var(--accent); }
+.val-item .v {
+  color: var(--text-primary); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 1;
+}
+.val-item .n { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.val-empty { color: var(--text-muted); font-size: 13px; padding: 8px; }
 table.results tbody tr:hover { background: var(--hover-wash); }
 
 .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }

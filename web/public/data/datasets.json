@@ -397,6 +397,11 @@
       "file": "agg/soc_loc.parquet",
       "rows": 665069,
       "bytes": 7474663
+    },
+    "locations_top": {
+      "file": "agg/locations_top.parquet",
+      "rows": 61669,
+      "bytes": 1517861
     }
   }
 }

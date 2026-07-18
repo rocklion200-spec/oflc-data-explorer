@@ -142,7 +142,7 @@ export function TopBars({ data, valueFmt = fmtNum, extraLabel, onPick }) {
       {data.length === 0 ? <div className="chart-note">No data for this selection.</div> : (
         <svg width={width} height={height} role="img" onMouseLeave={() => setTip(null)}>
           {data.map((d, i) => (
-            <g key={d.label} transform={`translate(0,${i * rowH + 4})`}
+            <g key={i} transform={`translate(0,${i * rowH + 4})`}
               style={onPick ? { cursor: "pointer" } : undefined}
               onClick={onPick ? () => onPick(d) : undefined}
               onMouseMove={(e) => setTip({

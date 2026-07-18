@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { COLUMN_TYPES } from "../queries.js";
-import { fmtUsd } from "./charts.jsx";
+import { fmtNum, fmtUsd } from "./charts.jsx";
 
 const LABELS = {
   employer_name: "Employer name", soc_title: "SOC title", job_title: "Job title",
@@ -54,6 +54,96 @@ const FILTER_HINT = {
   num: "e.g. >150k",
   date: "e.g. 2025-03 or >=2024",
 };
+
+// Excel-style filter for text columns: type for a contains match, or check
+// specific values (fetched with counts under all other active filters).
+// Checked values take precedence over the typed text.
+function ValueFilter({ col, value, onChange, fetchValues }) {
+  const text = value?.text || "";
+  const selected = value?.values || [];
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const seq = useRef(0);
+  const timer = useRef(null);
+  const boxRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const load = (t, delay = 250) => {
+    const id = ++seq.current;
+    clearTimeout(timer.current);
+    setLoading(true);
+    timer.current = setTimeout(() => {
+      fetchValues(col, t, () => id !== seq.current)
+        .then((rows) => { if (id === seq.current) { setItems(rows); setLoading(false); } })
+        .catch(() => { if (id === seq.current) setLoading(false); });
+    }, delay);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    // the table scrolls under the fixed dropdown; close instead of drifting
+    const onScroll = (e) => { if (!boxRef.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  const commit = (t, values) => onChange(t || values.length ? { text: t, values } : null);
+  const toggle = (v) => commit(text,
+    selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const show = () => {
+    const r = inputRef.current.getBoundingClientRect();
+    setPos({ left: Math.min(r.left, window.innerWidth - 280), top: r.bottom + 4 });
+    setOpen(true);
+    load(text, 0);
+  };
+
+  // keep checked values visible even when they fall outside the fetched top-N
+  const shown = [
+    ...selected.filter((v) => !items.some((it) => it.v === v)).map((v) => ({ v, n: null })),
+    ...items,
+  ];
+
+  return (
+    <div className="val-filter" ref={boxRef}>
+      <input ref={inputRef} type="search" value={text}
+        className={selected.length ? "has-sel" : ""}
+        placeholder={selected.length ? `${selected.length} checked` : FILTER_HINT.text}
+        onChange={(e) => { commit(e.target.value, selected); if (!open) show(); load(e.target.value); }}
+        onFocus={show}
+        onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }} />
+      {open && pos && (
+        <div className="val-list" style={{ left: pos.left, top: pos.top }}>
+          <div className="val-head">
+            <span>{loading ? "Loading…" : items.length >= 50 ? "Top 50 values" : `${items.length} values`}</span>
+            {(selected.length > 0 || text) && (
+              <button className="linkish"
+                onMouseDown={(e) => { e.preventDefault(); commit("", []); load("", 0); }}>
+                Clear
+              </button>
+            )}
+          </div>
+          {shown.map((it) => (
+            <label key={it.v ?? "null"} className="val-item">
+              <input type="checkbox" checked={selected.includes(it.v)}
+                onChange={() => toggle(it.v)} />
+              <span className="v" title={it.v}>{it.v}</span>
+              {it.n != null && <span className="n">{fmtNum(it.n)}</span>}
+            </label>
+          ))}
+          {!loading && shown.length === 0 && <div className="val-empty">No matching values.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ColumnManager({ program, columns, onColumns, onClose }) {
   const hidden = Object.keys(LABELS).filter((c) => !columns.includes(c));
@@ -110,7 +200,7 @@ function ColumnManager({ program, columns, onColumns, onClose }) {
 }
 
 export function ResultsTable({ program, rows, total, page, pageSize, onPage, sort, onSort,
-  columns, onColumns, colFilters, onColFilters }) {
+  columns, onColumns, colFilters, onColFilters, fetchColValues }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const [managing, setManaging] = useState(false);
   const dragCol = useRef(null);
@@ -164,9 +254,14 @@ export function ResultsTable({ program, rows, total, page, pageSize, onPage, sor
             <tr className="col-filter-row">
               {columns.map((key) => (
                 <th key={key}>
-                  <input type="search" value={colFilters[key] || ""}
-                    placeholder={FILTER_HINT[COLUMN_TYPES[key]] || "filter…"}
-                    onChange={(e) => setFilter(key, e.target.value)} />
+                  {COLUMN_TYPES[key] === "text" ? (
+                    <ValueFilter col={key} value={colFilters[key]}
+                      onChange={(v) => setFilter(key, v)} fetchValues={fetchColValues} />
+                  ) : (
+                    <input type="search" value={colFilters[key] || ""}
+                      placeholder={FILTER_HINT[COLUMN_TYPES[key]] || "filter…"}
+                      onChange={(e) => setFilter(key, e.target.value)} />
+                  )}
                 </th>
               ))}
             </tr>

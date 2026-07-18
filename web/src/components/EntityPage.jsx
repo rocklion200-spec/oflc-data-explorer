@@ -1,55 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { isStale } from "../db.js";
-import { fetchEntitySummary, fetchEntityTop } from "../queries.js";
-import { MonthlyLine, TopBars, fmtNum, fmtUsd } from "./charts.jsx";
+import { fetchEntitySummary } from "../queries.js";
+import { MonthlyLine, fmtNum, fmtUsd } from "./charts.jsx";
 
 const PROGRAM_LABELS = { lca: "LCA (H-1B)", perm: "PERM", pwd: "Prevailing Wage" };
 const DIM_TITLE = { employer: "Employer", soc: "Role (SOC)", title: "Job title" };
 
-// cube panels shown for each entity type; `pick` maps a clicked row to the
-// next drill-down selection
-const PANELS = {
-  employer: [
-    { title: "Top roles", cube: "emp_soc",
-      pick: (r) => ["soc", { k: r.k2, label: r.label2 }] },
-    { title: "Top job titles", cube: "emp_title",
-      pick: (r) => ["title", { k: r.k2, label: r.label2 }] },
-    { title: "Top locations", cube: "emp_loc",
-      pick: (r) => ["loc", { state: r.state, cityKey: r.city_key, label: r.label2 }] },
-  ],
-  soc: [
-    { title: "Top employers", cube: "soc_emp",
-      pick: (r) => ["employer", { k: r.k2, label: r.label2 }] },
-    { title: "Top locations", cube: "soc_loc",
-      pick: (r) => ["loc", { state: r.state, cityKey: r.city_key, label: r.label2 }] },
-  ],
-  title: [
-    { title: "Top employers", cube: "title_emp",
-      pick: (r) => ["employer", { k: r.k2, label: r.label2 }] },
-  ],
-};
-
 // Entity page for a single selected group: all years, all programs, entirely
-// served by the precomputed cubes (no row-level scans).
-export function EntityPage({ manifest, dim, sel, onDrill, onError }) {
+// served by the precomputed cubes (no row-level scans). The top-N drill
+// charts render between the header and the tiles, passed in as children so
+// they sit right below the search bar and chips.
+export function EntityPage({ manifest, dim, sel, onError, children }) {
   const [summary, setSummary] = useState(null);
-  const [tops, setTops] = useState({});
   const run = useRef(0);
 
   useEffect(() => {
     const id = ++run.current;
     const stale = () => id !== run.current;
-    setSummary(null); setTops({});
-    (async () => {
-      const s = await fetchEntitySummary(manifest, dim, sel.k, stale);
-      if (stale()) return;
-      setSummary(s);
-      for (const p of PANELS[dim]) {
-        const rows = await fetchEntityTop(manifest, p.cube, sel.k, stale);
-        if (stale()) return;
-        setTops((t) => ({ ...t, [p.cube]: rows }));
-      }
-    })().catch((e) => { if (!isStale(e) && id === run.current) onError(String(e)); });
+    setSummary(null);
+    fetchEntitySummary(manifest, dim, sel.k, stale)
+      .then((s) => { if (!stale()) setSummary(s); })
+      .catch((e) => { if (!isStale(e) && id === run.current) onError(String(e)); });
   }, [manifest, dim, sel.k]); // eslint-disable-line
 
   const o = summary?.overall;
@@ -73,6 +44,8 @@ export function EntityPage({ manifest, dim, sel, onDrill, onError }) {
         </span>
       </div>
 
+      {children}
+
       <div className="tiles">
         <div className="tile"><div className="label">Records (all years)</div>
           <div className="value">{o ? fmtNum(o.n) : "–"}</div></div>
@@ -95,19 +68,6 @@ export function EntityPage({ manifest, dim, sel, onDrill, onError }) {
           <MonthlyLine xLabel="Fiscal year" valueLabel="Median wage" valueFmt={fmtUsd}
             data={trend.map((d) => ({ month: `FY${d.fy}`, value: d.median_wage }))} />
         </div>
-      </div>
-
-      <div className="entity-panels">
-        {PANELS[dim].map((p) => (
-          <div className="panel" key={p.cube}>
-            <h2>{p.title}</h2>
-            <TopBars extraLabel="Median wage"
-              data={(tops[p.cube] ?? []).map((r) => ({
-                label: r.label2, value: r.n, extra: r.median_wage, row: r,
-              }))}
-              onPick={(d) => onDrill(...p.pick(d.row))} />
-          </div>
-        ))}
       </div>
     </>
   );
