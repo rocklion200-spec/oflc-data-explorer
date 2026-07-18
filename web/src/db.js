@@ -72,17 +72,35 @@ function toRows(batchLike) {
 // `stale` (optional) is polled: queued queries whose result is already
 // obsolete are skipped, and an in-flight query is cancelled via DuckDB's
 // pending-query protocol instead of running to completion.
+// Bulk work additionally waits for the fast lane to be quiet for a moment:
+// chart queries enqueue one at a time (each awaits the previous), so without
+// the grace period a bulk scan would grab the connection in the instant
+// between two chart queries and block the rest for its whole run.
+const BULK_DELAY = 400;
 const queues = { fast: [], bulk: [] };
 let running = false;
+let lastFast = 0;
 function pump() {
   if (running) return;
-  const job = queues.fast.shift() || queues.bulk.shift();
+  const fast = queues.fast.shift();
+  const job = fast || queues.bulk[0];
   if (!job) return;
+  if (!fast) {
+    const wait = lastFast + BULK_DELAY - Date.now();
+    if (wait > 0) { setTimeout(pump, wait); return; }
+    queues.bulk.shift();
+  } else {
+    lastFast = Date.now();
+  }
   running = true;
-  job().finally(() => { running = false; pump(); });
+  job().finally(() => {
+    if (fast) lastFast = Date.now();
+    running = false; pump();
+  });
 }
 
 export function query(sql, stale, lane = "fast") {
+  if (lane === "fast") lastFast = Date.now();
   const run = async () => {
     if (stale?.()) throw STALE;
     const conn = await getConn();
