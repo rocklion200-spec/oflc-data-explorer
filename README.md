@@ -21,7 +21,7 @@ pipeline/convert.py    xlsx -> normalized parquet (stage), then dedupe + publish
 data/raw/              downloaded .xlsx           (gitignored, ~6 GB)
 data/stage/            per-source-file parquet    (gitignored)
 web/                   Vite + React app
-web/public/data/       published parquet + datasets.json (committed, ~540 MB)
+web/public/data/       published parquet + datasets.json (its own repo: oflc-data)
 ```
 
 ## Refreshing / extending the data
@@ -52,6 +52,22 @@ npm run build    # static site in web/dist
 2. In the repo settings, set **Pages → Source → GitHub Actions**.
 3. The included workflow (`.github/workflows/deploy.yml`) builds the site and
    deploys it on every push to `main`.
+
+## Data hosting
+
+The published data (`web/public/data/`, ~840 MB of parquet) is **not** part
+of this repo: it lives in its own repo (`oflc-data`) served by its own GitHub
+Pages site, and the production build reads it from there
+(`VITE_DATA_BASE` in `web/.env.production`). Pages invalidates its CDN cache
+on every deploy, so keeping the data in a repo that only changes when the
+data actually changes means app deploys never re-cold-start ~840 MB of
+range-read caching. Both sites share the `<user>.github.io` origin, so no
+CORS is involved.
+
+- Local dev (`npm run dev`) reads `web/public/data/` directly — make that
+  directory a clone of `oflc-data` (or run the pipeline to regenerate it).
+- Publishing new data: run the pipeline (below), then commit + push inside
+  `web/public/data/`. The app repo needs no deploy for data-only updates.
 
 ## Data notes
 

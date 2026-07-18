@@ -2,6 +2,11 @@
 data/raw/
 data/stage/
 
+# published data lives in its own repo (oflc-data) with its own Pages site,
+# so app deploys don't invalidate the data CDN; the pipeline still publishes
+# here, and web/public/data is itself a clone of the oflc-data repo
+web/public/data/
+
 .venv/
 node_modules/
 web/dist/

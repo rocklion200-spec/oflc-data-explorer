@@ -178,7 +178,7 @@ export async function fetchRows(from, where, order, page, pageSize, stale) {
            employer_group, soc_group, title_group
     FROM ${from} ${where}
     ORDER BY ${by}
-    LIMIT ${pageSize} OFFSET ${page * pageSize}`, stale);
+    LIMIT ${pageSize} OFFSET ${page * pageSize}`, stale, "bulk");
 }
 
 // Excel-style column filter values: distinct values of `col` matching the

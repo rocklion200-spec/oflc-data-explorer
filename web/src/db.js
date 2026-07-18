@@ -6,6 +6,14 @@ import workerMvp from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url
 import wasmEh from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
 import workerEh from "@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url";
 
+// Data files live under DATA_BASE — by default the app's own data/ dir.
+// Production points VITE_DATA_BASE at the separate oflc-data Pages repo so
+// code deploys don't invalidate the CDN cache of ~840 MB of parquet.
+const DATA_BASE = (() => {
+  const b = new URL(import.meta.env.VITE_DATA_BASE || "data/", document.baseURI).href;
+  return b.endsWith("/") ? b : `${b}/`;
+})();
+
 let connPromise = null;
 let registered = new Set();
 let dbRef = null;
@@ -38,7 +46,7 @@ function getConn() {
 export async function registerParquet(fileName) {
   if (registered.has(fileName)) return;
   await getConn(); // ensure db exists
-  const url = new URL(`data/${fileName}`, document.baseURI).href;
+  const url = new URL(fileName, DATA_BASE).href;
   await dbRef.registerFileURL(fileName, url, duckdb.DuckDBDataProtocol.HTTP, false);
   registered.add(fileName);
 }
@@ -56,12 +64,25 @@ function toRows(batchLike) {
   });
 }
 
-// Serialize queries through one connection; convert Arrow rows to plain JS.
+// Queries run one at a time through a two-lane scheduler: the fast lane
+// (charts, summaries, search — small cube reads) always runs before queued
+// bulk work (table row scans over the per-FY files), so one long scan can't
+// hold up the charts. The running query is never preempted — DuckDB-WASM
+// executes a single query at a time regardless.
 // `stale` (optional) is polled: queued queries whose result is already
 // obsolete are skipped, and an in-flight query is cancelled via DuckDB's
 // pending-query protocol instead of running to completion.
-let chain = Promise.resolve();
-export function query(sql, stale) {
+const queues = { fast: [], bulk: [] };
+let running = false;
+function pump() {
+  if (running) return;
+  const job = queues.fast.shift() || queues.bulk.shift();
+  if (!job) return;
+  running = true;
+  job().finally(() => { running = false; pump(); });
+}
+
+export function query(sql, stale, lane = "fast") {
   const run = async () => {
     if (stale?.()) throw STALE;
     const conn = await getConn();
@@ -85,13 +106,14 @@ export function query(sql, stale) {
       clearInterval(watchdog);
     }
   };
-  const p = chain.then(run, run);
-  chain = p.catch(() => {});
-  return p;
+  return new Promise((resolve, reject) => {
+    queues[lane].push(() => run().then(resolve, reject));
+    pump();
+  });
 }
 
 export async function loadManifest() {
-  const res = await fetch(new URL("data/datasets.json", document.baseURI));
+  const res = await fetch(new URL("datasets.json", DATA_BASE));
   if (!res.ok) throw new Error(`datasets.json: HTTP ${res.status}`);
   return res.json();
 }
