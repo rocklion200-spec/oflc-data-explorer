@@ -76,7 +76,9 @@ export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value", xLa
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      {data.length === 0 ? <div className="chart-note">No data for this selection.</div> : (
+      {data.length === 0 ? (
+        <div className="chart-note" style={{ minHeight: height - 20 }}>No data for this selection.</div>
+      ) : (
         <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setTip(null)} role="img">
           {ticks.map((t) => (
             <g key={t}>
@@ -112,6 +114,88 @@ export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value", xLa
               </text>
             </>
           )}
+        </svg>
+      )}
+      <Tooltip tip={tip} />
+    </div>
+  );
+}
+
+// data: [{fy, n, lo, p05, p25, p50, p75, p95, hi}] — one distribution column
+// per fiscal year: 5th–95th pct whisker, p25–p75 box, median tick. Raw
+// min/max live in the tooltip only; as axis bounds they'd flatten the boxes.
+export function WageDistribution({ data }) {
+  const [ref, width] = useWidth();
+  const [tip, setTip] = useState(null);
+  const height = 240, mL = 56, mR = 14, mT = 12, mB = 24;
+  const iw = Math.max(40, width - mL - mR), ih = height - mT - mB;
+  const ticks = niceTicks(Math.max(...data.map((d) => d.p95 ?? 0), 1), 5);
+  const yMax = ticks[ticks.length - 1];
+  const y = (v) => mT + ih - ((v ?? 0) / yMax) * ih;
+  const slot = iw / Math.max(data.length, 1);
+  const boxW = Math.min(46, Math.max(8, slot * 0.5));
+  const cx = (i) => mL + slot * (i + 0.5);
+  const labelEvery = Math.ceil(data.length / Math.max(3, Math.floor(iw / 64)));
+  const last = data.length - 1;
+
+  const showTip = (e, d) => setTip({
+    x: e.clientX, y: e.clientY,
+    lines: [["", `FY${d.fy}`], ["Records", fmtNum(d.n)],
+      ["Max", fmtUsd(d.hi)], ["95th pct", fmtUsd(d.p95)], ["75th pct", fmtUsd(d.p75)],
+      ["Median", fmtUsd(d.p50)], ["25th pct", fmtUsd(d.p25)],
+      ["5th pct", fmtUsd(d.p05)], ["Min", fmtUsd(d.lo)]],
+  });
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      {data.length === 0 ? (
+        <div className="chart-note" style={{ minHeight: height - 20 }}>No wage data for this selection.</div>
+      ) : (
+        <svg width={width} height={height} role="img" onMouseLeave={() => setTip(null)}>
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={mL} x2={width - mR} y1={y(t)} y2={y(t)}
+                stroke={t === 0 ? "var(--baseline)" : "var(--grid)"} strokeWidth="1" />
+              <text x={mL - 6} y={y(t) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
+                {t === 0 ? "0" : `$${fmtCompact(t)}`}
+              </text>
+            </g>
+          ))}
+          {data.map((d, i) => {
+            const x = cx(i), hw = boxW / 2;
+            const boxTop = y(d.p75), boxH = Math.max(2, y(d.p25) - y(d.p75));
+            return (
+              <g key={d.fy}
+                onMouseMove={(e) => showTip(e, d)}>
+                <rect x={x - slot / 2} y={mT} width={slot} height={ih} fill="transparent" />
+                {/* 5th–95th percentile whisker with end caps */}
+                <line x1={x} x2={x} y1={y(d.p95)} y2={y(d.p05)}
+                  stroke="var(--series-1)" strokeWidth="2" opacity="0.45" />
+                <line x1={x - hw * 0.55} x2={x + hw * 0.55} y1={y(d.p95)} y2={y(d.p95)}
+                  stroke="var(--series-1)" strokeWidth="2" opacity="0.45" />
+                <line x1={x - hw * 0.55} x2={x + hw * 0.55} y1={y(d.p05)} y2={y(d.p05)}
+                  stroke="var(--series-1)" strokeWidth="2" opacity="0.45" />
+                {/* p25–p75 box */}
+                <rect x={x - hw} y={boxTop} width={boxW} height={boxH} rx="3"
+                  fill="var(--series-1-wash)" stroke="var(--series-1)" strokeWidth="1.5" />
+                {/* median tick */}
+                <line x1={x - hw} x2={x + hw} y1={y(d.p50)} y2={y(d.p50)}
+                  stroke="var(--series-1)" strokeWidth="2.5" />
+                {i === last && (
+                  <text x={x} y={y(d.p50) - 7} textAnchor="middle" fontSize="11.5" fontWeight="600"
+                    fill="var(--text-primary)" stroke="var(--surface-1)" strokeWidth="3"
+                    paintOrder="stroke">
+                    {fmtUsd(d.p50)}
+                  </text>
+                )}
+                {i % labelEvery === 0 && (
+                  <text x={x} y={height - 7} textAnchor="middle" fontSize="11" fill="var(--text-muted)">
+                    FY{d.fy}
+                  </text>
+                )}
+              </g>
+            );
+          })}
         </svg>
       )}
       <Tooltip tip={tip} />
