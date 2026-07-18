@@ -402,6 +402,11 @@
       "file": "agg/locations_top.parquet",
       "rows": 61669,
       "bytes": 1517861
+    },
+    "program_stats": {
+      "file": "agg/program_stats.parquet",
+      "rows": 64,
+      "bytes": 5256
     }
   }
 }

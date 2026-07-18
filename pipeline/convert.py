@@ -751,7 +751,7 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     # Several source years are ALL CAPS, so prefer a mixed-case spelling when
     # one exists (FILTER mixed(...)) before falling back to the overall mode.
     mixed = lambda c: f"(trim({c}) <> upper(trim({c})))"
-    needs_labels = only is None or bool(set(only) - {"locations_top"})
+    needs_labels = only is None or bool(set(only) - {"locations_top", "program_stats"})
     if needs_labels:
         build_labels(con, mixed, curated)
 
@@ -819,6 +819,42 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
         ) a LEFT JOIN (VALUES {sn}) sn(code, name) ON sn.code = a.state
         WHERE a.is_state OR a.city_key IS NOT NULL
         ORDER BY a.n DESC"""
+
+    # program-level stats: one row per (program, fy) plus the year-range
+    # presets the UI offers (all years, last 2, last 5), so the landing page
+    # renders its tiles and wage-distribution chart without any row scan.
+    stat_measures = """count(*)::BIGINT AS n,
+               count(DISTINCT employer_name)::BIGINT AS employers,
+               count(*) FILTER (is_cert)::BIGINT AS n_cert,
+               round(median(wage_annual))::BIGINT AS median_wage,
+               count(wage_annual)::BIGINT AS nw,
+               round(min(wage_annual))::BIGINT AS lo,
+               round(quantile_cont(wage_annual, 0.05))::BIGINT AS p05,
+               round(quantile_cont(wage_annual, 0.25))::BIGINT AS p25,
+               round(median(wage_annual))::BIGINT AS p50,
+               round(quantile_cont(wage_annual, 0.75))::BIGINT AS p75,
+               round(quantile_cont(wage_annual, 0.95))::BIGINT AS p95,
+               round(max(wage_annual))::BIGINT AS hi"""
+    specs["program_stats"] = f"""
+        WITH fys AS (
+          SELECT program, fiscal_year,
+                 row_number() OVER (PARTITION BY program
+                                    ORDER BY fiscal_year DESC) AS rk
+          FROM (SELECT DISTINCT program, fiscal_year FROM allpub
+                WHERE fiscal_year IS NOT NULL)
+        )
+        SELECT * FROM (
+          SELECT program, fiscal_year AS fy_lo, fiscal_year AS fy_hi,
+                 {stat_measures}
+          FROM allpub WHERE fiscal_year IS NOT NULL
+          GROUP BY program, fiscal_year
+          UNION ALL
+          SELECT program, min(fiscal_year) AS fy_lo, max(fiscal_year) AS fy_hi,
+                 {stat_measures}
+          FROM allpub JOIN fys USING (program, fiscal_year)
+          JOIN (VALUES (2), (5), (9999)) s(span) ON fys.rk <= s.span
+          GROUP BY program, s.span
+        ) ORDER BY program, fy_lo, fy_hi"""
 
     if only:
         unknown = set(only) - specs.keys()

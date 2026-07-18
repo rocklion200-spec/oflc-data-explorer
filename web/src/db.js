@@ -19,7 +19,15 @@ async function init() {
   const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   dbRef = db;
-  return db.connect();
+  const conn = await db.connect();
+  // Cache parquet footers between queries — every screen refetch otherwise
+  // re-reads the metadata of all ~19 per-FY files over HTTP. Setting names
+  // vary across DuckDB versions, so try both and ignore what's unsupported.
+  for (const s of ["SET enable_object_cache=true",
+                   "SET parquet_metadata_cache=true"]) {
+    await conn.query(s).catch(() => {});
+  }
+  return conn;
 }
 
 function getConn() {
