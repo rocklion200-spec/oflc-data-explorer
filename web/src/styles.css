@@ -62,6 +62,14 @@ header.app .sub { color: var(--text-muted); font-size: 13px; }
 .year-panel { padding: 10px 14px; }
 .year-panel .year-range { margin-top: 0; }
 
+/* program tabs + fiscal-year filter, pinned as one bar at the top of the page */
+.scope-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; }
+.scope-bar .tabs { margin-bottom: 0; }
+.scope-bar .year-panel { margin-bottom: 0; margin-left: auto; }
+
+/* stale content kept visible while its queries rerun — avoids layout shift */
+.updating { opacity: 0.55; transition: opacity 0.2s ease 0.15s; }
+
 .year-range { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 .year-range .year-label { font-size: 12px; color: var(--text-secondary); }
 .year-range label {
@@ -100,6 +108,8 @@ header.app .sub { color: var(--text-muted); font-size: 13px; }
 .panel svg { display: block; max-width: 100%; }
 
 .chart-note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+/* reserve chart-ish height while a top chart first loads */
+.top-charts .chart-note { min-height: 280px; }
 
 .viz-tooltip {
   position: fixed; pointer-events: none; z-index: 10;
@@ -183,6 +193,21 @@ tr.col-filter-row input[type="search"].has-sel {
   border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 400;
 }
 .val-item:hover { background: var(--hover-wash); }
+.val-item input:disabled { opacity: 0.6; }
+.val-item:has(input:disabled) { cursor: default; }
+.val-actions { display: flex; gap: 10px; text-transform: none; letter-spacing: normal; }
+.val-terms { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 7px 6px; }
+.val-term {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--series-1-wash); border: 1px solid var(--accent);
+  color: var(--text-primary); border-radius: 999px; padding: 1px 4px 1px 9px;
+  font-size: 12px;
+}
+.val-term button {
+  border: none; background: none; color: var(--text-secondary); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 1px 3px; border-radius: 50%;
+}
+.val-term button:hover { background: var(--hover-wash); color: var(--text-primary); }
 .val-item input { flex: none; margin: 0; accent-color: var(--accent); }
 .val-item .v {
   color: var(--text-primary); overflow: hidden; text-overflow: ellipsis;

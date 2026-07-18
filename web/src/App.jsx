@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadManifest, isStale } from "./db.js";
 import {
-  scope, whereClause, fetchStats, fetchTrend, fetchRows, fetchColumnValues,
+  scope, whereClause, fetchStats, fetchWageByYear, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroups, fetchEntityTop,
 } from "./queries.js";
 import { ProgramTabs, YearRange } from "./components/Filters.jsx";
 import { ResultsTable, loadColumns } from "./components/ResultsTable.jsx";
-import { MonthlyLine, TopBars, fmtNum, fmtUsd } from "./components/charts.jsx";
+import { WageDistribution, TopBars, fmtNum, fmtUsd } from "./components/charts.jsx";
 import { SearchHero, Chips } from "./components/SearchHero.jsx";
 import { EntityPage } from "./components/EntityPage.jsx";
 
@@ -96,8 +96,9 @@ export default function App() {
   const debouncedColFilters = useDebounced(colFilters, 350);
 
   const [stats, setStats] = useState(null);
-  const [trend, setTrend] = useState([]);
+  const [wages, setWages] = useState([]);
   const [tops, setTops] = useState({});
+  const [topsBusy, setTopsBusy] = useState(false);
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState({ col: "decision_date", dir: "desc" });
@@ -175,7 +176,9 @@ export default function App() {
     if (!manifest || !selectedYears) return;
     const id = ++topsRun.current;
     const stale = () => id !== topsRun.current;
-    setTops({});
+    // keep the previous charts visible (dimmed) while refetching so the page
+    // doesn't collapse and shift under an open column-filter dropdown
+    setTopsBusy(true);
     (async () => {
       const cubes = hasAggregates(manifest);
       const cubeDim = selCount === 1 && soleDim !== "loc" && cubes ? soleDim : null;
@@ -216,8 +219,10 @@ export default function App() {
         if (stale()) return;
         setTops((t) => ({ ...t, [dim]: entry }));
       }
+      if (!stale()) setTopsBusy(false);
     })().catch((e) => {
-      if (!isStale(e) && id === topsRun.current) setError(String(e));
+      if (isStale(e)) return;
+      if (id === topsRun.current) { setError(String(e)); setTopsBusy(false); }
     });
   }, [manifest, program, selectedYears, debouncedColFilters, sel]); // eslint-disable-line
 
@@ -230,15 +235,15 @@ export default function App() {
     (async () => {
       const from = await scope(manifest, program, selectedYears);
       if (stale()) return;
-      if (!from) { setStats(null); setTrend([]); setAggBusy(false); return; }
+      if (!from) { setStats(null); setWages([]); setAggBusy(false); return; }
       const where = whereClause(debouncedColFilters, sel);
       const s = await fetchStats(from, where, stale);
       if (stale()) return;
       setStats(s);
       if (mode !== "entity") {
-        const t = await fetchTrend(from, where, stale);
+        const t = await fetchWageByYear(from, where, stale);
         if (stale()) return;
-        setTrend(t);
+        setWages(t);
       }
       setError(null); setAggBusy(false);
     })().catch((e) => {
@@ -291,7 +296,7 @@ export default function App() {
   const searchable = hasAggregates(manifest);
 
   const topCharts = topDims.length > 0 && (
-    <div className="top-charts">
+    <div className={`top-charts${topsBusy ? " updating" : ""}`}>
       {topDims.map((dim) => {
         const t = tops[dim];
         return (
@@ -326,6 +331,14 @@ export default function App() {
       )}
       <Chips sel={sel} onRemove={removeSel} onClear={() => setSel(EMPTY_SEL)} />
 
+      <div className="scope-bar">
+        <ProgramTabs programs={Object.keys(manifest.programs)} program={program} onChange={switchProgram} />
+        <div className="panel year-panel">
+          <YearRange years={years} selectedYears={selectedYears}
+            onYears={(y) => y.length && setSelectedYears(y)} />
+        </div>
+      </div>
+
       {mode === "entity" ? (
         <EntityPage manifest={manifest} dim={soleDim} sel={sel[soleDim]} onError={setError}>
           {topCharts}
@@ -341,18 +354,11 @@ export default function App() {
         </span>
       </div>
 
-      <ProgramTabs programs={Object.keys(manifest.programs)} program={program} onChange={switchProgram} />
-
-      <div className="panel year-panel">
-        <YearRange years={years} selectedYears={selectedYears}
-          onYears={(y) => y.length && setSelectedYears(y)} />
-      </div>
-
       <div className="status-line">{busy ? "Querying…" : error ? <span className="error">{error}</span> : ""}</div>
 
       {mode !== "entity" && (
         <>
-          <div className="tiles">
+          <div className={`tiles${aggBusy ? " updating" : ""}`}>
             <div className="tile"><div className="label">Records</div>
               <div className="value">{stats ? fmtNum(stats.n) : "–"}</div></div>
             <div className="tile"><div className="label">Employers</div>
@@ -363,16 +369,11 @@ export default function App() {
               <div className="value">{stats && stats.pct_certified != null ? `${stats.pct_certified}%` : "–"}</div></div>
           </div>
 
-          <div className="charts">
-            <div className="panel">
-              <h2>Applications per month (by decision date)</h2>
-              <MonthlyLine data={trend.map((d) => ({ month: d.month, value: d.n }))} valueLabel="Records" />
-            </div>
-            <div className="panel">
-              <h2>Median annual wage per month</h2>
-              <MonthlyLine data={trend.map((d) => ({ month: d.month, value: d.median_wage }))}
-                valueFmt={fmtUsd} valueLabel="Median wage" />
-            </div>
+          <div className={`panel${aggBusy ? " updating" : ""}`}>
+            <h2>Annual wage by fiscal year
+              <span className="scope-note">box 25th–75th pct · whiskers 5th–95th · min/max on hover</span>
+            </h2>
+            <WageDistribution data={wages} />
           </div>
         </>
       )}

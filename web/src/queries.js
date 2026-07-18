@@ -63,14 +63,18 @@ function datePredicate(col, raw) {
   return null;
 }
 
-// Text columns carry an Excel-style filter object: checked values win over
-// the typed text (which otherwise applies as a contains match).
+// Text columns carry an Excel-style filter object: checked values and
+// "select all" contains-terms OR together and win over the typed text
+// (which otherwise applies as a contains match).
 function columnPredicate(col, raw) {
   if (!(col in COLUMN_TYPES)) return null;
   if (raw && typeof raw === "object") {
+    const parts = [];
     if (raw.values?.length) {
-      return `${col} IN (${raw.values.map((v) => `'${esc(v)}'`).join(",")})`;
+      parts.push(`${col} IN (${raw.values.map((v) => `'${esc(v)}'`).join(",")})`);
     }
+    for (const t of raw.terms || []) parts.push(`${col} ILIKE '%${esc(t)}%'`);
+    if (parts.length) return parts.join(" OR ");
     raw = raw.text || "";
   }
   const v = raw.trim();
@@ -116,12 +120,21 @@ export async function fetchStats(from, where, stale) {
   return r;
 }
 
-export async function fetchTrend(from, where, stale) {
+// Wage distribution per fiscal year for the box-style annual wage chart:
+// quartile box, 5th–95th percentile whiskers (raw min/max are outlier-prone
+// — a single $3M filing would flatten the chart — so they only go in the
+// tooltip).
+export async function fetchWageByYear(from, where, stale) {
   return query(`
-    SELECT strftime(date_trunc('month', decision_date), '%Y-%m') AS month,
-           count(*)::INT AS n,
-           round(median(wage_annual))::INT AS median_wage
-    FROM ${from} ${andWhere(where, "decision_date IS NOT NULL")}
+    SELECT fiscal_year AS fy, count(*)::INT AS n,
+           round(min(wage_annual))::INT AS lo,
+           round(quantile_cont(wage_annual, 0.05))::INT AS p05,
+           round(quantile_cont(wage_annual, 0.25))::INT AS p25,
+           round(median(wage_annual))::INT AS p50,
+           round(quantile_cont(wage_annual, 0.75))::INT AS p75,
+           round(quantile_cont(wage_annual, 0.95))::INT AS p95,
+           round(max(wage_annual))::INT AS hi
+    FROM ${from} ${andWhere(where, "wage_annual IS NOT NULL")}
     GROUP BY 1 ORDER BY 1`, stale);
 }
 

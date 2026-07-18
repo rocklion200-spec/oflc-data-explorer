@@ -55,12 +55,15 @@ const FILTER_HINT = {
   date: "e.g. 2025-03 or >=2024",
 };
 
-// Excel-style filter for text columns: type for a contains match, or check
-// specific values (fetched with counts under all other active filters).
-// Checked values take precedence over the typed text.
+// Excel-style filter for text columns: type for a contains match, check
+// specific values (fetched with counts under all other active filters), or
+// "Select all" to keep everything containing the typed text as a term —
+// terms accumulate, so you can OR several contains-matches together.
+// Checked values and terms take precedence over the typed text.
 function ValueFilter({ col, value, onChange, fetchValues }) {
   const text = value?.text || "";
   const selected = value?.values || [];
+  const terms = value?.terms || [];
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const [items, setItems] = useState([]);
@@ -85,19 +88,41 @@ function ValueFilter({ col, value, onChange, fetchValues }) {
   useEffect(() => {
     if (!open) return;
     const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
-    // the table scrolls under the fixed dropdown; close instead of drifting
-    const onScroll = (e) => { if (!boxRef.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", onDown);
-    window.addEventListener("scroll", onScroll, true);
+    // the page reflows (charts refresh) and scrolls under the fixed dropdown;
+    // track the input's rect every frame so the dropdown stays glued to it
+    let raf;
+    const track = () => {
+      const r = inputRef.current?.getBoundingClientRect();
+      if (r) {
+        const left = Math.min(r.left, window.innerWidth - 280), top = r.bottom + 4;
+        setPos((p) => (p && p.left === left && p.top === top ? p : { left, top }));
+      }
+      raf = requestAnimationFrame(track);
+    };
+    raf = requestAnimationFrame(track);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("scroll", onScroll, true);
+      cancelAnimationFrame(raf);
     };
   }, [open]);
 
-  const commit = (t, values) => onChange(t || values.length ? { text: t, values } : null);
+  const commit = (t, values, tms = terms) =>
+    onChange(t || values.length || tms.length ? { text: t, values, terms: tms } : null);
   const toggle = (v) => commit(text,
     selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  // "Select all": keep everything containing the typed text, beyond the top 50
+  // shown — stored as a contains-term; checked values it implies are dropped
+  const addTerm = () => {
+    const t = text.trim();
+    if (!t) return;
+    const low = t.toLowerCase();
+    const tms = terms.some((x) => x.toLowerCase() === low) ? terms : [...terms, t];
+    commit("", selected.filter((v) => !v.toLowerCase().includes(low)), tms);
+    load("", 0);
+  };
+  const impliedByTerm = (v) => terms.some((t) => v.toLowerCase().includes(t.toLowerCase()));
+  const nSelected = selected.length + terms.length;
   const show = () => {
     const r = inputRef.current.getBoundingClientRect();
     setPos({ left: Math.min(r.left, window.innerWidth - 280), top: r.bottom + 4 });
@@ -114,8 +139,8 @@ function ValueFilter({ col, value, onChange, fetchValues }) {
   return (
     <div className="val-filter" ref={boxRef}>
       <input ref={inputRef} type="search" value={text}
-        className={selected.length ? "has-sel" : ""}
-        placeholder={selected.length ? `${selected.length} checked` : FILTER_HINT.text}
+        className={nSelected ? "has-sel" : ""}
+        placeholder={nSelected ? `${nSelected} selected` : FILTER_HINT.text}
         onChange={(e) => { commit(e.target.value, selected); if (!open) show(); load(e.target.value); }}
         onFocus={show}
         onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }} />
@@ -123,21 +148,45 @@ function ValueFilter({ col, value, onChange, fetchValues }) {
         <div className="val-list" style={{ left: pos.left, top: pos.top }}>
           <div className="val-head">
             <span>{loading ? "Loading…" : items.length >= 50 ? "Top 50 values" : `${items.length} values`}</span>
-            {(selected.length > 0 || text) && (
-              <button className="linkish"
-                onMouseDown={(e) => { e.preventDefault(); commit("", []); load("", 0); }}>
-                Clear
-              </button>
-            )}
+            <span className="val-actions">
+              {text.trim() && (
+                <button className="linkish" title={`Keep every value containing “${text.trim()}”`}
+                  onMouseDown={(e) => { e.preventDefault(); addTerm(); }}>
+                  Select all
+                </button>
+              )}
+              {(nSelected > 0 || text) && (
+                <button className="linkish"
+                  onMouseDown={(e) => { e.preventDefault(); commit("", [], []); load("", 0); }}>
+                  Clear
+                </button>
+              )}
+            </span>
           </div>
-          {shown.map((it) => (
-            <label key={it.v ?? "null"} className="val-item">
-              <input type="checkbox" checked={selected.includes(it.v)}
-                onChange={() => toggle(it.v)} />
-              <span className="v" title={it.v}>{it.v}</span>
-              {it.n != null && <span className="n">{fmtNum(it.n)}</span>}
-            </label>
-          ))}
+          {terms.length > 0 && (
+            <div className="val-terms">
+              {terms.map((t) => (
+                <span key={t} className="val-term">contains “{t}”
+                  <button title="Remove"
+                    onMouseDown={(e) => { e.preventDefault(); commit(text, selected, terms.filter((x) => x !== t)); }}>
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {shown.map((it) => {
+            const implied = impliedByTerm(it.v);
+            return (
+              <label key={it.v ?? "null"} className="val-item">
+                <input type="checkbox" checked={implied || selected.includes(it.v)}
+                  disabled={implied} title={implied ? "Included by a “contains” term above" : undefined}
+                  onChange={() => toggle(it.v)} />
+                <span className="v" title={it.v}>{it.v}</span>
+                {it.n != null && <span className="n">{fmtNum(it.n)}</span>}
+              </label>
+            );
+          })}
           {!loading && shown.length === 0 && <div className="val-empty">No matching values.</div>}
         </div>
       )}
