@@ -1,4 +1,5 @@
 import { query, registerParquet } from "./db.js";
+import { cachedQuery } from "./cache.js";
 
 const esc = (s) => s.replace(/'/g, "''");
 
@@ -127,7 +128,12 @@ const WAGE_QUANTILES = `
 // would flatten the chart, so they only go in the tooltip) come out of ONE
 // row-level scan: an overall grouping-set row plus one row per fiscal year.
 // Scans dominate load time over HTTP, so never pay for the same one twice.
-export async function fetchOverview(from, where, withWages, stale) {
+export function fetchOverview(from, where, withWages, stale) {
+  return cachedQuery(`ov|${withWages ? 1 : 0}|${from}|${where}`,
+    () => fetchOverviewLive(from, where, withWages, stale));
+}
+
+async function fetchOverviewLive(from, where, withWages, stale) {
   const measures = `
            count(*)::INT AS n,
            count(DISTINCT employer_name)::INT AS employers,
@@ -151,7 +157,11 @@ export async function fetchOverview(from, where, withWages, stale) {
   };
 }
 
-export async function fetchRows(from, where, sort, page, pageSize, stale) {
+// `order` is a list of {col, dir} applied in sequence (tie-breakers).
+export async function fetchRows(from, where, order, page, pageSize, stale) {
+  const by = order
+    .map((s) => `${s.col} ${s.dir === "asc" ? "ASC" : "DESC"} NULLS LAST`)
+    .join(", ");
   return query(`
     SELECT case_number, case_status, visa_class,
            strftime(received_date, '%Y-%m-%d') AS received_date,
@@ -167,7 +177,7 @@ export async function fetchRows(from, where, sort, page, pageSize, stale) {
            full_time_position, total_workers, fiscal_year,
            employer_group, soc_group, title_group
     FROM ${from} ${where}
-    ORDER BY ${sort.col} ${sort.dir === "asc" ? "ASC" : "DESC"} NULLS LAST
+    ORDER BY ${by}
     LIMIT ${pageSize} OFFSET ${page * pageSize}`, stale);
 }
 
@@ -255,19 +265,27 @@ export function fetchProgramStats(manifest) {
 // Entity-page record count for the table pager, summed from the summary
 // cube's (k, program, fy) rows instead of scanning row-level parquet. Only
 // valid when no column filters are active.
-export async function fetchEntityCount(manifest, dim, key, program, years, stale) {
-  const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
-  if (!from) return null;
-  const [r] = await query(`
-    SELECT coalesce(sum(n), 0)::INT AS n FROM ${from}
-    WHERE k = '${esc(key)}' AND program = '${esc(program)}'
-      AND fy BETWEEN ${Math.min(...years)} AND ${Math.max(...years)}`, stale);
-  return r?.n ?? 0;
+export function fetchEntityCount(manifest, dim, key, program, years, stale) {
+  const lo = Math.min(...years), hi = Math.max(...years);
+  return cachedQuery(`ec|${dim}|${program}|${lo}-${hi}|${key}`, async () => {
+    const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
+    if (!from) return null;
+    const [r] = await query(`
+      SELECT coalesce(sum(n), 0)::INT AS n FROM ${from}
+      WHERE k = '${esc(key)}' AND program = '${esc(program)}'
+        AND fy BETWEEN ${lo} AND ${hi}`, stale);
+    return r?.n ?? 0;
+  });
 }
 
 // One fetch returns everything the entity page header needs: the all-years
 // all-programs rollup, per-program rollups, and the per-FY trend.
-export async function fetchEntitySummary(manifest, dim, key, stale) {
+export function fetchEntitySummary(manifest, dim, key, stale) {
+  return cachedQuery(`es|${dim}|${key}`,
+    () => fetchEntitySummaryLive(manifest, dim, key, stale));
+}
+
+async function fetchEntitySummaryLive(manifest, dim, key, stale) {
   const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
   if (!from) return null;
   const rows = await query(
@@ -280,7 +298,12 @@ export async function fetchEntitySummary(manifest, dim, key, stale) {
   };
 }
 
-export async function fetchEntityTop(manifest, cube, key, stale, limit = 12) {
+export function fetchEntityTop(manifest, cube, key, stale, limit = 12) {
+  return cachedQuery(`et|${cube}|${limit}|${key}`,
+    () => fetchEntityTopLive(manifest, cube, key, stale, limit));
+}
+
+async function fetchEntityTopLive(manifest, cube, key, stale, limit) {
   const from = await aggFrom(manifest, cube);
   if (!from) return [];
   if (cube === "emp_loc" || cube === "soc_loc") {
@@ -297,19 +320,27 @@ export async function fetchEntityTop(manifest, cube, key, stale, limit = 12) {
 // Landing-page overview: first rows of the ordered *_top files (already
 // sorted by n DESC, so LIMIT stops after the first row group). `cond` lets
 // the locations chart keep to cities (statewide rollups would crowd it out).
-export async function fetchOverviewTop(manifest, name, stale, limit = 12, cond = null) {
-  const from = await aggFrom(manifest, name);
-  if (!from) return [];
-  return query(
-    `SELECT * FROM ${from} ${cond ? `WHERE ${cond}` : ""} LIMIT ${limit}`, stale);
+export function fetchOverviewTop(manifest, name, stale, limit = 12, cond = null) {
+  return cachedQuery(`ot|${name}|${limit}|${cond || ""}`, async () => {
+    const from = await aggFrom(manifest, name);
+    if (!from) return [];
+    return query(
+      `SELECT * FROM ${from} ${cond ? `WHERE ${cond}` : ""} LIMIT ${limit}`, stale);
+  });
 }
 
 // Row-level top-N for the combined drill view (2+ selections). All requested
 // dimensions share ONE scan via grouping sets; ranking happens per set with a
 // window so each dimension gets its own top-N. labelExpr turns group keys
 // into readable labels. Returns { dim: [{k, label, n, median_wage}] }.
-export async function fetchTopGroupsMulti(from, where, dims, stale, limit = 10) {
-  if (!dims.length) return {};
+export function fetchTopGroupsMulti(from, where, dims, stale, limit = 10) {
+  if (!dims.length) return Promise.resolve({});
+  return cachedQuery(
+    `tg|${limit}|${dims.map((d) => d.dim).join(",")}|${from}|${where}`,
+    () => fetchTopGroupsMultiLive(from, where, dims, stale, limit));
+}
+
+async function fetchTopGroupsMultiLive(from, where, dims, stale, limit) {
   const keyCols = dims.map((d) => `${d.col} AS k_${d.dim}`);
   const labCols = dims.map((d) => `${d.labelExpr} AS lab_${d.dim}`);
   const sets = dims.map((d) => `(${d.col})`).join(", ");

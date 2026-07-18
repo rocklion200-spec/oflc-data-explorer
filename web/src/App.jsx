@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadManifest, isStale } from "./db.js";
+import { initCache } from "./cache.js";
 import {
   scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
@@ -13,6 +14,21 @@ import { EntityPage } from "./components/EntityPage.jsx";
 
 const PAGE_SIZE = 50;
 const EMPTY_SEL = { employer: null, soc: null, title: null, loc: null };
+
+// top charts show TOP_N rows; "Show more" reveals up to TOP_N_FULL in a
+// scrollable panel (data is fetched at TOP_N_FULL up front, so expanding is
+// instant everywhere except the landing page, whose inlined tops carry TOP_N)
+const TOP_N = 12;
+const TOP_N_FULL = 50;
+
+// default record order until a column header is clicked; begin_date only
+// exists on LCA filings
+const DEFAULT_SORT = { col: "received_date", dir: "desc" };
+const defaultOrder = (program) => [
+  DEFAULT_SORT,
+  ...(program === "lca" ? [{ col: "begin_date", dir: "desc" }] : []),
+  { col: "decision_date", dir: "desc" },
+];
 
 const DIMS = ["employer", "soc", "title", "loc"];
 const TOP_TITLES = {
@@ -100,9 +116,10 @@ export default function App() {
   const [wages, setWages] = useState([]);
   const [tops, setTops] = useState({});
   const [topsBusy, setTopsBusy] = useState(false);
+  const [expanded, setExpanded] = useState({}); // per-dim "Show more" state
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(0);
-  const [sort, setSort] = useState({ col: "decision_date", dir: "desc" });
+  const [sort, setSort] = useState(null); // null -> program default order
   const [rowsBusy, setRowsBusy] = useState(false);
   const [aggBusy, setAggBusy] = useState(false);
   const rowsRun = useRef(0);
@@ -120,7 +137,9 @@ export default function App() {
   const topDims = DIMS.filter((d) => !sel[d] && (selCount > 0 || d !== "title"));
 
   useEffect(() => {
-    loadManifest().then(setManifest).catch((e) => setError(String(e)));
+    loadManifest()
+      .then((m) => { initCache(m); setManifest(m); })
+      .catch((e) => setError(String(e)));
   }, []);
 
   // keep URL hash and back button in sync with the selection
@@ -171,6 +190,13 @@ export default function App() {
     else addSel(dim, { k, label });
   };
 
+  // overview-cube (and landing-JSON) rows share one shape -> chart entry
+  const cubeRow = (dim) => (d) => ({
+    label: d.label, n: d.n, median_wage: d.median_wage,
+    sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label }
+      : { k: d.k, label: d.label },
+  });
+
   // top charts: cube-backed where a precomputed file covers the current
   // selection (landing page, single-entity pages), row-level otherwise
   useEffect(() => {
@@ -178,15 +204,13 @@ export default function App() {
     const id = ++topsRun.current;
     const stale = () => id !== topsRun.current;
     // the landing page's charts ship inside datasets.json — render them
-    // synchronously, before DuckDB has even booted
+    // synchronously, before DuckDB has even booted; `full: false` marks them
+    // as TOP_N-deep so "Show more" knows to pull TOP_N_FULL from the cubes
     if (selCount === 0 && manifest.landing) {
       const entries = {};
       for (const dim of topDims) {
-        entries[dim] = { scope: "cube", rows: (manifest.landing.tops[dim] || []).map((d) => ({
-          label: d.label, n: d.n, median_wage: d.median_wage,
-          sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label }
-            : { k: d.k, label: d.label },
-        })) };
+        entries[dim] = { scope: "cube", full: false,
+          rows: (manifest.landing.tops[dim] || []).map(cubeRow(dim)) };
       }
       setTops((t) => ({ ...t, ...entries }));
       setTopsBusy(false);
@@ -202,17 +226,13 @@ export default function App() {
       for (const dim of topDims) {
         let entry;
         if (selCount === 0 && cubes && OVERVIEW_FILES[dim]) {
-          const r = await fetchOverviewTop(manifest, OVERVIEW_FILES[dim], stale, 12,
+          const r = await fetchOverviewTop(manifest, OVERVIEW_FILES[dim], stale, TOP_N_FULL,
             dim === "loc" ? "city_key IS NOT NULL" : null);
-          entry = { scope: "cube", rows: r.map((d) => ({
-            label: d.label, n: d.n, median_wage: d.median_wage,
-            sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label }
-              : { k: d.k, label: d.label },
-          })) };
+          entry = { scope: "cube", full: true, rows: r.map(cubeRow(dim)) };
         } else if (cubeDim && ENTITY_CUBES[cubeDim]?.[dim]) {
           const r = await fetchEntityTop(manifest, ENTITY_CUBES[cubeDim][dim],
-            sel[cubeDim].k, stale);
-          entry = { scope: "cube", rows: r.map((d) => ({
+            sel[cubeDim].k, stale, TOP_N_FULL);
+          entry = { scope: "cube", full: true, rows: r.map((d) => ({
             label: d.label2, n: d.n, median_wage: d.median_wage,
             sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label2 }
               : { k: d.k2, label: d.label2 },
@@ -231,11 +251,11 @@ export default function App() {
         const where = whereClause(debouncedColFilters, sel);
         const res = from
           ? await fetchTopGroupsMulti(from, where,
-              rowDims.map((dim) => ({ dim, ...ROW_CHARTS[dim] })), stale)
+              rowDims.map((dim) => ({ dim, ...ROW_CHARTS[dim] })), stale, TOP_N_FULL)
           : {};
         if (stale()) return;
         for (const dim of rowDims) {
-          const entry = { scope: "rows", rows: (res[dim] || []).map((d) => ({
+          const entry = { scope: "rows", full: true, rows: (res[dim] || []).map((d) => ({
             label: d.label ?? d.k, n: d.n, median_wage: d.median_wage,
             sel: dim === "loc" ? locSelFromKey(d.k, d.label ?? d.k)
               : { k: d.k, label: d.label ?? d.k },
@@ -249,6 +269,27 @@ export default function App() {
       if (id === topsRun.current) { setError(String(e)); setTopsBusy(false); }
     });
   }, [manifest, program, selectedYears, debouncedColFilters, sel]); // eslint-disable-line
+
+  // landing charts ship only TOP_N rows inside datasets.json; the first
+  // "Show more" on one of them upgrades that chart to TOP_N_FULL from the
+  // cube files (marked full so this doesn't loop)
+  const expandRun = useRef(0);
+  useEffect(() => {
+    if (!manifest || selCount !== 0 || !hasAggregates(manifest)) return;
+    const id = ++expandRun.current;
+    const tid = topsRun.current;
+    const stale = () => id !== expandRun.current || tid !== topsRun.current;
+    for (const dim of DIMS) {
+      if (!expanded[dim] || !tops[dim] || tops[dim].full || !OVERVIEW_FILES[dim]) continue;
+      fetchOverviewTop(manifest, OVERVIEW_FILES[dim], stale, TOP_N_FULL,
+        dim === "loc" ? "city_key IS NOT NULL" : null)
+        .then((r) => {
+          if (stale()) return;
+          setTops((t) => ({ ...t, [dim]: { scope: "cube", full: true, rows: r.map(cubeRow(dim)) } }));
+        })
+        .catch((e) => { if (!isStale(e) && !stale()) setError(String(e)); });
+    }
+  }, [manifest, expanded, tops, selCount]); // eslint-disable-line
 
   // aggregates (tiles + trend): refetched when scope, filters or drill change
   useEffect(() => {
@@ -324,7 +365,8 @@ export default function App() {
       if (stale()) return;
       if (!from) { setRows([]); setRowsBusy(false); return; }
       const where = whereClause(debouncedColFilters, sel);
-      const r = await fetchRows(from, where, sort, page, PAGE_SIZE, stale);
+      const order = sort ? [sort] : defaultOrder(program);
+      const r = await fetchRows(from, where, order, page, PAGE_SIZE, stale);
       if (stale()) return;
       setRows(r); setError(null); setRowsBusy(false);
     })().catch((e) => {
@@ -345,7 +387,7 @@ export default function App() {
   };
 
   const switchProgram = (p) => {
-    setProgram(p); setColFilters({});
+    setProgram(p); setColFilters({}); setSort(null);
     setColumns(loadColumns(p)); setSelectedYears(null);
   };
 
@@ -360,17 +402,29 @@ export default function App() {
     <div className={`top-charts${topsBusy ? " updating" : ""}`}>
       {topDims.map((dim) => {
         const t = tops[dim];
+        const isExp = !!expanded[dim];
+        const canExpand = t && (t.rows.length > TOP_N
+          || (!t.full && mode === "home" && OVERVIEW_FILES[dim]));
+        const rows = t ? (isExp ? t.rows : t.rows.slice(0, TOP_N)) : [];
         return (
           <div className="panel" key={dim}>
             <h2>{TOP_TITLES[dim]}
               <span className="scope-note">
                 {t?.scope === "rows" ? "current records" : "all programs & years"}
               </span>
+              {canExpand && (
+                <button className="linkish chart-more"
+                  onClick={() => setExpanded((x) => ({ ...x, [dim]: !isExp }))}>
+                  {isExp ? `Top ${TOP_N} ↑` : "Show more ↓"}
+                </button>
+              )}
             </h2>
             {t ? (
-              <TopBars extraLabel="Median wage"
-                data={t.rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage, row: r }))}
-                onPick={(d) => addSel(dim, d.row.sel)} />
+              <div className={isExp ? "chart-scroll" : undefined}>
+                <TopBars extraLabel="Median wage"
+                  data={rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage, row: r }))}
+                  onPick={(d) => addSel(dim, d.row.sel)} />
+              </div>
             ) : <div className="chart-note">Loading…</div>}
           </div>
         );
@@ -440,7 +494,7 @@ export default function App() {
       )}
 
       <ResultsTable program={program} rows={rows} total={stats?.n ?? 0} page={page} pageSize={PAGE_SIZE}
-        onPage={setPage} sort={sort} onSort={setSort}
+        onPage={setPage} sort={sort ?? DEFAULT_SORT} onSort={setSort}
         columns={columns} onColumns={setColumns}
         colFilters={colFilters} onColFilters={setColFilters}
         fetchColValues={fetchColValues} />

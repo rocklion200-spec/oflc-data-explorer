@@ -107,6 +107,10 @@ header.app .sub { color: var(--text-muted); font-size: 13px; }
 .charts .panel, .panel { min-width: 0; }
 .panel svg { display: block; max-width: 100%; }
 
+/* "Show more" on a top chart: expands it in place, scrolling inside the panel */
+button.linkish.chart-more { float: right; font-size: 11.5px; }
+.chart-scroll { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
+
 .chart-note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
 /* reserve chart-ish height while a top chart first loads */
 .top-charts .chart-note { min-height: 280px; }

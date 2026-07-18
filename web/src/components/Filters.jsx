@@ -39,7 +39,7 @@ export function YearRange({ years, selectedYears, onYears }) {
         <button className={isAll ? "on" : ""} onClick={() => setRange(years[0], years[years.length - 1])}>
           All years
         </button>
-        {[2, 5].map((n) => years.length > n && (
+        {[5, 2].map((n) => years.length > n && (
           <button key={n} className={!isAll && last(n) ? "on" : ""}
             onClick={() => setRange(years[years.length - n], years[years.length - 1])}>
             Last {n}
