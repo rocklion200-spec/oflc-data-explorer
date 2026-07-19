@@ -203,6 +203,126 @@ export function WageDistribution({ data }) {
   );
 }
 
+// Wage levels over wage years: Levels 1–4 as an ordinal one-hue ramp
+// (light→dark, validated for both modes), the OEWS average as a dashed
+// neutral reference line. data: one entry per wage year, in order:
+//   {label:'2021–22', l1..l4, avg, missing, tip:[[k,v],...]}
+// Missing years break the lines (nulls become gaps, not zeros).
+const WAGE_SERIES = [
+  { key: "l4", name: "Level 4", color: "var(--wage-l4)" },
+  { key: "l3", name: "Level 3", color: "var(--wage-l3)" },
+  { key: "l2", name: "Level 2", color: "var(--wage-l2)" },
+  { key: "l1", name: "Level 1", color: "var(--wage-l1)" },
+];
+
+export function WageLevelsChart({ data, valueFmt = fmtUsd }) {
+  const [ref, width] = useWidth();
+  const [tip, setTip] = useState(null);
+  const height = 280, mL = 56, mR = 92, mT = 12, mB = 24;
+  const iw = Math.max(40, width - mL - mR), ih = height - mT - mB;
+  const allVals = data.flatMap((d) => [d.l1, d.l2, d.l3, d.l4, d.avg]).filter((v) => v != null);
+  const ticks = niceTicks(Math.max(...allVals, 1), 5);
+  const yMax = ticks[ticks.length - 1];
+  const x = (i) => mL + (data.length === 1 ? iw / 2 : (i / (data.length - 1)) * iw);
+  const y = (v) => mT + ih - (v / yMax) * ih;
+
+  // nulls split a series into separate path segments (gap, not zero)
+  const segs = (key) => {
+    const out = [];
+    let cur = [];
+    data.forEach((d, i) => {
+      if (d[key] == null) { if (cur.length) out.push(cur); cur = []; }
+      else cur.push([x(i), y(d[key])]);
+    });
+    if (cur.length) out.push(cur);
+    return out;
+  };
+  const pathOf = (pts) => pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
+
+  const onMove = (e) => {
+    if (!data.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const i = Math.round(((px - mL) / Math.max(iw, 1)) * (data.length - 1));
+    const c = Math.max(0, Math.min(data.length - 1, i));
+    setTip({ x: e.clientX, y: e.clientY, i: c, lines: data[c].tip });
+  };
+
+  // last non-null point per series, for the direct end labels
+  const lastPoint = (key) => {
+    for (let i = data.length - 1; i >= 0; i--) if (data[i][key] != null) return i;
+    return -1;
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <div className="wage-legend">
+        {[...WAGE_SERIES].reverse().map((s) => (
+          <span key={s.key}><i style={{ background: s.color }} />{s.name}</span>
+        ))}
+        <span><i className="dashed" />OEWS average</span>
+      </div>
+      {data.length === 0 || allVals.length === 0 ? (
+        <div className="chart-note" style={{ minHeight: height - 20 }}>No published wages for this selection.</div>
+      ) : (
+        <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setTip(null)} role="img">
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={mL} x2={width - mR} y1={y(t)} y2={y(t)}
+                stroke={t === 0 ? "var(--baseline)" : "var(--grid)"} strokeWidth="1" />
+              <text x={mL - 6} y={y(t) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
+                {t === 0 ? "0" : `$${fmtCompact(t)}`}
+              </text>
+            </g>
+          ))}
+          {data.map((d, i) => (
+            <text key={d.label} x={x(i)} y={height - 7} textAnchor="middle" fontSize="11"
+              fill={d.missing ? "var(--baseline)" : "var(--text-muted)"}>
+              {d.label}
+            </text>
+          ))}
+          {tip && (
+            <line x1={x(tip.i)} x2={x(tip.i)} y1={mT} y2={mT + ih} stroke="var(--baseline)" strokeWidth="1" />
+          )}
+          {segs("avg").map((pts, k) => (
+            <path key={k} d={pathOf(pts)} fill="none" stroke="var(--text-muted)" strokeWidth="2"
+              strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" opacity="0.8" />
+          ))}
+          {WAGE_SERIES.map((s) => (
+            <g key={s.key}>
+              {segs(s.key).map((pts, k) => (
+                <path key={k} d={pathOf(pts)} fill="none" stroke={s.color} strokeWidth="2"
+                  strokeLinejoin="round" strokeLinecap="round" />
+              ))}
+              {segs(s.key).filter((pts) => pts.length === 1).map((pts, k) => (
+                <circle key={`p${k}`} cx={pts[0][0]} cy={pts[0][1]} r="3.5" fill={s.color} />
+              ))}
+            </g>
+          ))}
+          {tip && data[tip.i] && [...WAGE_SERIES.map((s) => ({ c: s.color, v: data[tip.i][s.key] })),
+            { c: "var(--text-muted)", v: data[tip.i].avg }].map((p, k) =>
+            p.v != null && (
+              <circle key={k} cx={x(tip.i)} cy={y(p.v)} r="4.5" fill={p.c}
+                stroke="var(--surface-1)" strokeWidth="2" />
+            ))}
+          {WAGE_SERIES.map((s) => {
+            const i = lastPoint(s.key);
+            if (i < 0) return null;
+            return (
+              <text key={s.key} x={x(i) + 8} y={y(data[i][s.key]) + 4} fontSize="11.5"
+                fontWeight="600" fill="var(--text-primary)">
+                {`${valueFmt(data[i][s.key])} `}
+                <tspan fontWeight="400" fill="var(--text-muted)">{s.name.replace("Level ", "L")}</tspan>
+              </text>
+            );
+          })}
+        </svg>
+      )}
+      <Tooltip tip={tip} />
+    </div>
+  );
+}
+
 // data: [{label, value, extra}] horizontal bars, single hue, value at tip.
 // onPick (optional) makes rows clickable — used for drill-down selection.
 export function TopBars({ data, valueFmt = fmtNum, extraLabel, onPick }) {

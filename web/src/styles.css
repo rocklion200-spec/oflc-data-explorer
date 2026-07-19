@@ -12,6 +12,11 @@
   --series-1-wash: rgba(42, 120, 214, 0.1);
   --accent: #2a78d6;
   --hover-wash: rgba(11, 11, 11, 0.04);
+  /* wage-level ordinal ramp (one hue, light→dark; validated per mode) */
+  --wage-l1: #86b6ef;
+  --wage-l2: #3987e5;
+  --wage-l3: #1c5cab;
+  --wage-l4: #0d366b;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,6 +33,10 @@
     --series-1-wash: rgba(57, 135, 229, 0.12);
     --accent: #3987e5;
     --hover-wash: rgba(255, 255, 255, 0.06);
+    --wage-l1: #9ec5f4;
+    --wage-l2: #5598e7;
+    --wage-l3: #2a78d6;
+    --wage-l4: #184f95;
   }
 }
 
@@ -299,3 +308,27 @@ table.results tbody tr:hover { background: var(--hover-wash); }
 
 footer.app { color: var(--text-muted); font-size: 12px; margin: 18px 0 8px; }
 footer.app a { color: var(--text-secondary); }
+
+/* --- wage-levels view --- */
+header.app nav.view-tabs { margin-left: auto; margin-bottom: 0; }
+.chips-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.chips-row .chips { margin-bottom: 0; }
+.chips-row:not(:empty) { margin-bottom: 12px; }
+.wage-pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+@media (max-width: 860px) { .wage-pickers { grid-template-columns: 1fr; } }
+.wage-combo { margin-bottom: 0; }
+.wage-pick { display: flex; align-items: center; min-height: 46px; }
+.wage-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-bottom: 12px; }
+.wage-controls .tabs { margin-bottom: 0; }
+.wage-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 16px;
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+}
+.wage-legend i {
+  display: inline-block; width: 16px; height: 3px; border-radius: 2px;
+  vertical-align: middle; margin-right: 6px;
+}
+.wage-legend i.dashed {
+  background: repeating-linear-gradient(90deg, var(--text-muted) 0 4px, transparent 4px 7px);
+}
+.wage-intro p { color: var(--text-secondary); font-size: 13.5px; max-width: 680px; margin: 0; }

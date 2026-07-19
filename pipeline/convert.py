@@ -658,6 +658,11 @@ def stage_all(con: duckdb.DuckDBPyConnection) -> None:
 def publish(con: duckdb.DuckDBPyConnection) -> None:
     WEB_DATA.mkdir(parents=True, exist_ok=True)
     manifest = {"programs": {}}
+    # the wage library (pipeline/wages.py) owns its own manifest block
+    if (WEB_DATA / "datasets.json").exists():
+        prev = json.loads((WEB_DATA / "datasets.json").read_text())
+        if "wages" in prev:
+            manifest["wages"] = prev["wages"]
     for program in ("lca", "perm", "pwd"):
         staged = sorted((STAGE / program).glob("*.parquet"))
         if not staged:

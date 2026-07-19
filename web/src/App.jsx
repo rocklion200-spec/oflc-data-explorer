@@ -4,8 +4,9 @@ import { initCache } from "./cache.js";
 import {
   scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
-  fetchEntityTop, fetchProgramStats, fetchEntityCount,
+  fetchEntityTop, fetchProgramStats, fetchEntityCount, hasWages,
 } from "./queries.js";
+import { WagesPage, wagesHash } from "./components/WagesPage.jsx";
 import { ProgramTabs, YearRange } from "./components/Filters.jsx";
 import { ResultsTable, loadColumns } from "./components/ResultsTable.jsx";
 import { WageDistribution, TopBars, fmtNum, fmtUsd } from "./components/charts.jsx";
@@ -105,6 +106,11 @@ function selFromHash() {
 export default function App() {
   const [manifest, setManifest] = useState(null);
   const [error, setError] = useState(null);
+  // two top-level views share the URL hash: the case explorer's drill
+  // selection (#e=…) and the wage-levels lookup (#wages?…)
+  const [view, setView] = useState(() =>
+    window.location.hash.startsWith("#wages") ? "wages" : "cases");
+  const lastWagesHash = useRef(null);
   const [program, setProgram] = useState("lca");
   const [selectedYears, setSelectedYears] = useState(null); // null until manifest loads
   const [colFilters, setColFilters] = useState({});
@@ -145,17 +151,49 @@ export default function App() {
   // keep URL hash and back button in sync with the selection
   const fromPop = useRef(false);
   useEffect(() => {
-    const onPop = () => { fromPop.current = true; setSel(selFromHash()); };
+    const onPop = () => {
+      const wages = window.location.hash.startsWith("#wages");
+      setView(wages ? "wages" : "cases");
+      if (wages) lastWagesHash.current = window.location.hash;
+      else { fromPop.current = true; setSel(selFromHash()); }
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   useEffect(() => {
+    if (view === "wages") return; // WagesPage owns the hash there
     if (fromPop.current) { fromPop.current = false; return; }
     const hash = selToHash(sel);
     if (hash !== window.location.hash) {
       history.pushState(null, "", hash || window.location.pathname + window.location.search);
     }
-  }, [sel]);
+  }, [sel, view]);
+
+  // view switching pushes the target view's hash itself; a role link keeps
+  // the county/source/unit from the last wage-view visit
+  const openWages = (params) => {
+    let hash = lastWagesHash.current || wagesHash();
+    if (params) {
+      const prev = new URLSearchParams((lastWagesHash.current || "").split("?")[1] || "");
+      hash = wagesHash({
+        st: prev.get("st"), county: prev.get("co"),
+        src: prev.get("src"), unit: prev.get("u"), ...params,
+      });
+    }
+    history.pushState(null, "", hash);
+    setView("wages");
+  };
+  const openCases = (nextSel) => {
+    if (window.location.hash.startsWith("#wages")) {
+      lastWagesHash.current = window.location.hash;
+    }
+    const s = nextSel ?? sel;
+    fromPop.current = true; // hash is pushed here, not by the sel effect
+    history.pushState(null, "", selToHash(s)
+      || window.location.pathname + window.location.search);
+    if (nextSel) setSel(nextSel);
+    setView("cases");
+  };
 
   const years = useMemo(() => {
     if (!manifest) return [];
@@ -432,11 +470,46 @@ export default function App() {
     </div>
   );
 
+  // link a selected role (and its wage-library counterpart) across views;
+  // group keys keep O*NET .XX details the wage library doesn't have
+  const socBase = sel.soc && /^\d{2}-\d{4}/.test(sel.soc.k) ? sel.soc.k.slice(0, 7) : null;
+
+  if (view === "wages") {
+    return (
+      <>
+        <header className="app">
+          <h1>OFLC Data Explorer</h1>
+          <span className="sub">U.S. DOL foreign labor certification disclosure data</span>
+          <nav className="tabs view-tabs">
+            <button onClick={() => openCases()}>Case explorer</button>
+            <button className="active">Wage levels</button>
+          </nav>
+        </header>
+        {error && <div className="status-line"><span className="error">{error}</span></div>}
+        <WagesPage manifest={manifest} onError={setError}
+          onOpenCases={(code, label) =>
+            openCases({ ...EMPTY_SEL, soc: { k: code, label: label || code } })} />
+        <footer className="app">
+          Source: <a href="https://flag.dol.gov/wage-data/wage-data-downloads" target="_blank" rel="noreferrer">
+          OFLC wage data downloads</a> (OEWS survey based). Each wage year is effective July through
+          June. Levels 1–4 are the OFLC prevailing wage levels; the average is the OEWS mean.
+          Queries run entirely in your browser via DuckDB-WASM.
+        </footer>
+      </>
+    );
+  }
+
   return (
     <>
       <header className="app">
         <h1>OFLC Data Explorer</h1>
         <span className="sub">U.S. DOL foreign labor certification disclosure data</span>
+        {hasWages(manifest) && (
+          <nav className="tabs view-tabs">
+            <button className="active">Case explorer</button>
+            <button onClick={() => openWages(null)}>Wage levels</button>
+          </nav>
+        )}
       </header>
 
       {searchable && (
@@ -444,7 +517,15 @@ export default function App() {
           search={(text, stale) => searchGroups(manifest, text, stale)}
           onPick={pickFromSearch} />
       )}
-      <Chips sel={sel} onRemove={removeSel} onClear={() => setSel(EMPTY_SEL)} />
+      <div className="chips-row">
+        <Chips sel={sel} onRemove={removeSel} onClear={() => setSel(EMPTY_SEL)} />
+        {socBase && hasWages(manifest) && (
+          <button className="linkish" onClick={() =>
+            openWages({ soc: socBase, socLabel: sel.soc.label })}>
+            Wage levels for this role →
+          </button>
+        )}
+      </div>
 
       <div className="scope-bar">
         <ProgramTabs programs={Object.keys(manifest.programs)} program={program} onChange={switchProgram} />

@@ -329,6 +329,69 @@ export function fetchOverviewTop(manifest, name, stale, limit = 12, cond = null)
   });
 }
 
+// ---------------------------------------------------------------------------
+// Wage library (OFLC wage-data downloads): OEWS-based prevailing wage levels
+// per (wage year, area, SOC, source). Trend lookups key on soc_2018 — the
+// pipeline bridges the 2021-22 file's SOC-2010 codes — and resolve a picked
+// county to each year's area code via the per-year geo table, which keeps
+// trends honest across OMB area redefinitions (a county simply has no row in
+// years whose geography doesn't list it).
+
+export const hasWages = (manifest) => !!manifest.wages;
+
+async function wageFrom(manifest, name) {
+  const f = manifest.wages?.files?.[name]?.file;
+  if (!f) return null;
+  await registerParquet(f);
+  return `read_parquet('${f}')`;
+}
+
+// Picker indexes, loaded once: ~950 occupations (incl. OFLC's R&D/non-R&D
+// split codes, which the ACWIA table uses exclusively for some roles) and ~5.6k
+// county/town keys with their year coverage (New England switched from
+// town- to county-based areas in 2025, so the two eras have distinct keys).
+let wageIndexCache = null;
+export function loadWageIndex(manifest) {
+  if (!wageIndexCache) {
+    wageIndexCache = (async () => {
+      const occ = await wageFrom(manifest, "socs");
+      const geo = await wageFrom(manifest, "geo");
+      if (!occ || !geo) return null;
+      const occs = await query(`SELECT code, title, in_alc, in_edc FROM ${occ}`);
+      const places = await query(`
+        SELECT state_ab AS st, any_value(state) AS state, county,
+               min(wage_year)::INT AS y0, max(wage_year)::INT AS y1,
+               arg_max(area_name, wage_year) AS area_name
+        FROM ${geo} GROUP BY state_ab, county ORDER BY state_ab, county`);
+      return { occs, places };
+    })();
+    wageIndexCache.catch(() => { wageIndexCache = null; }); // allow retry
+  }
+  return wageIndexCache;
+}
+
+// One row per wage year for a (SOC, county, source) pick. Where the SOC
+// bridge folds several old codes into one modern one (only 2021-22), levels
+// are averaged and `codes` names the constituents.
+export function fetchWageTrend(manifest, soc, st, county, source, stale) {
+  return cachedQuery(`wt|${source}|${st}|${county}|${soc}`, async () => {
+    const w = await wageFrom(manifest, "wages");
+    const g = await wageFrom(manifest, "geo");
+    if (!w || !g) return [];
+    return query(`
+      SELECT w.wage_year AS year, any_value(g.area_name) AS area_name,
+             string_agg(DISTINCT w.soc_code, ' + ') AS codes,
+             avg(w.level1) AS l1, avg(w.level2) AS l2,
+             avg(w.level3) AS l3, avg(w.level4) AS l4,
+             avg(w.average) AS average,
+             bool_or(w.annual) AS annual, any_value(w.note) AS note
+      FROM ${w} w JOIN ${g} g ON g.wage_year = w.wage_year AND g.area = w.area
+      WHERE w.soc_2018 = '${esc(soc)}' AND w.source = '${esc(source)}'
+        AND g.state_ab = '${esc(st)}' AND g.county = '${esc(county)}'
+      GROUP BY 1 ORDER BY 1`, stale);
+  });
+}
+
 // Row-level top-N for the combined drill view (2+ selections). All requested
 // dimensions share ONE scan via grouping sets; ranking happens per set with a
 // window so each dimension gets its own top-N. labelExpr turns group keys
