@@ -237,13 +237,21 @@ export async function searchGroups(manifest, text, stale, perDim = 5) {
   await ensureSearchTable(manifest);
   const t = esc(text.trim());
   const cond = t ? `WHERE label ILIKE '%${t}%' OR k ILIKE '%${t}%'` : "";
+  // With a query, the dimension holding the most matching records leads —
+  // "New York" appears in employer names too, but the location matches carry
+  // far more filings, so that's almost surely what's meant. Without a query
+  // (the focus dropdown), keep the canonical section order.
+  const dimOrder = t
+    ? "dim_n DESC"
+    : `CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1
+       WHEN 'title' THEN 2 ELSE 3 END`;
   return query(`
     SELECT dim, k, label, n FROM (
-      SELECT *, row_number() OVER (PARTITION BY dim ORDER BY n DESC) AS rn
+      SELECT *, row_number() OVER (PARTITION BY dim ORDER BY n DESC) AS rn,
+             sum(n) OVER (PARTITION BY dim) AS dim_n
       FROM search_groups ${cond}
     ) WHERE rn <= ${perDim}
-    ORDER BY CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1
-             WHEN 'title' THEN 2 ELSE 3 END, n DESC`,
+    ORDER BY ${dimOrder}, n DESC`,
     stale);
 }
 
@@ -318,6 +326,37 @@ async function fetchEntityTopLive(manifest, cube, key, stale, limit) {
   return query(`
     SELECT k2, label2, n, median_wage
     FROM ${from} WHERE k = '${esc(key)}' ORDER BY n DESC LIMIT ${limit}`, stale);
+}
+
+// Wage-library place -> case-explorer location selection ("closest match"):
+// county_key joins directly, except pre-2025 New England places, which are
+// towns rather than counties — there the town name doubles as the city.
+export const NEW_ENGLAND = ["CT", "MA", "ME", "NH", "RI", "VT"];
+export function locFromPlace(place) {
+  if (!place?.key) return null;
+  const label = `${place.county}, ${place.st}`;
+  if (NEW_ENGLAND.includes(place.st) && place.y1 != null && place.y1 < 2025) {
+    const city = place.county
+      .replace(/\s+(town|city|plantation|gore|grant|location|purchase|township)$/i, "")
+      .toUpperCase();
+    return { state: place.st, cityKey: city, countyKey: null, label };
+  }
+  return { state: place.st, cityKey: null, countyKey: place.key, label };
+}
+
+// Batch city -> modal county key lookup for the wage view's top-locations
+// chart (disclosure tops are cities; the wage library keys on counties).
+export async function fetchCityCounties(manifest, cities, stale) {
+  const from = await aggFrom(manifest, "city_county");
+  if (!from || !cities.length) return {};
+  const list = cities
+    .map((c) => `'${esc(`${c.state}|${c.city_key}`)}'`).join(", ");
+  const rows = await query(`
+    SELECT state, city_key, county_key FROM ${from}
+    WHERE state || '|' || city_key IN (${list})`, stale);
+  const out = {};
+  for (const r of rows) out[`${r.state}|${r.city_key}`] = r.county_key;
+  return out;
 }
 
 // City -> its modal county key (the pipeline's agg/city_county file), used

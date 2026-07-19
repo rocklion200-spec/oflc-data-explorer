@@ -17,6 +17,15 @@
   --wage-l2: #3987e5;
   --wage-l3: #1c5cab;
   --wage-l4: #0d366b;
+  /* categorical compare palette (fixed slot order, CVD-validated per mode) */
+  --cat-1: #2a78d6;
+  --cat-2: #008300;
+  --cat-3: #e87ba4;
+  --cat-4: #eda100;
+  --cat-5: #1baf7a;
+  --cat-6: #eb6834;
+  --cat-7: #4a3aa7;
+  --cat-8: #e34948;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -37,6 +46,14 @@
     --wage-l2: #5598e7;
     --wage-l3: #2a78d6;
     --wage-l4: #184f95;
+    --cat-1: #3987e5;
+    --cat-2: #008300;
+    --cat-3: #d55181;
+    --cat-4: #c98500;
+    --cat-5: #199e70;
+    --cat-6: #d95926;
+    --cat-7: #9085e9;
+    --cat-8: #e66767;
   }
 }
 
@@ -332,6 +349,11 @@ header.app nav.view-tabs { margin-left: auto; margin-bottom: 0; }
   background: repeating-linear-gradient(90deg, var(--text-muted) 0 4px, transparent 4px 7px);
 }
 .wage-intro p { color: var(--text-secondary); font-size: 13.5px; max-width: 680px; margin: 0; }
+.chip .swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  vertical-align: -1px; margin-right: 2px;
+}
+.wage-note { color: var(--text-muted); font-size: 12.5px; }
 
 /* ---- wage-levels export panel ---- */
 .wage-export { margin-top: 4px; }

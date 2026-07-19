@@ -136,6 +136,13 @@ export function HelpPage({ manifest }) {
           one of the two source tables. Before wage year 2005 a different two-level system was used,
           so 2005 is as far back as the library goes.
         </p>
+        <p>
+          <strong>Comparing.</strong> Add several counties (or several occupations — one dimension at
+          a time, up to 8) and the chart switches to a single wage level, one colored line per
+          selection; the level buttons pick which. The top charts double as shortcuts: with an
+          occupation selected they rank where it&apos;s filed most, and clicking a bar adds that county
+          to the comparison.
+        </p>
       </div>
 
       <div className="panel">
@@ -154,7 +161,7 @@ export function HelpPage({ manifest }) {
             your layout is remembered per program.</li>
           <li><strong>⬇ Excel</strong> downloads the currently matching records with <em>every</em>{" "}
             column, capped at 50,000 rows so the file stays openable — narrow the filters or year range
-            to get a complete set. The wage levels tab has its own <strong>⬇ Spreadsheet</strong>{" "}
+            to get a complete set. The wage levels tab has its own <strong>⬇ Excel</strong>{" "}
             download that can cover many occupations and counties at once.</li>
           <li><strong>Cross-links.</strong> &quot;Wage levels for this role&quot; jumps from a role chip to
             the wage library, carrying the selected county (or the selected city&apos;s county) along;

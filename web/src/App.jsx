@@ -5,7 +5,7 @@ import {
   scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
   fetchEntityTop, fetchProgramStats, fetchEntityCount, hasWages,
-  fetchCityCounty, fetchExport,
+  fetchCityCounty, fetchExport, NEW_ENGLAND, locFromPlace,
 } from "./queries.js";
 import { downloadXlsx, exportRowCap } from "./xlsx.js";
 import { WagesPage, wagesHash } from "./components/WagesPage.jsx";
@@ -109,22 +109,6 @@ function selFromHash() {
   return sel;
 }
 
-// Wage-library place -> case-explorer location selection ("closest match"):
-// county_key joins directly, except pre-2025 New England places, which are
-// towns rather than counties — there the town name doubles as the city.
-const NEW_ENGLAND = ["CT", "MA", "ME", "NH", "RI", "VT"];
-function locFromPlace(place) {
-  if (!place?.key) return null;
-  const label = `${place.county}, ${place.st}`;
-  if (NEW_ENGLAND.includes(place.st) && place.y1 != null && place.y1 < 2025) {
-    const city = place.county
-      .replace(/\s+(town|city|plantation|gore|grant|location|purchase|township)$/i, "")
-      .toUpperCase();
-    return { state: place.st, cityKey: city, countyKey: null, label };
-  }
-  return { state: place.st, cityKey: null, countyKey: place.key, label };
-}
-
 export default function App() {
   const [manifest, setManifest] = useState(null);
   const [error, setError] = useState(null);
@@ -201,11 +185,11 @@ export default function App() {
       const prev = new URLSearchParams((lastWagesHash.current || "").split("?")[1] || "");
       const keep = {
         st: prev.get("st"), county: prev.get("co"),
-        ck: prev.get("ck"), ct: prev.get("ct"),
-        src: prev.get("src"), unit: prev.get("u"),
+        ck: prev.get("ck"), ct: prev.get("ct"), p: prev.get("p"),
+        src: prev.get("src"), unit: prev.get("u"), lv: prev.get("lv"),
       };
-      // a link that carries its own location replaces the remembered one
-      if (params.st) keep.county = keep.ck = keep.ct = null;
+      // a link that carries its own location replaces the remembered one(s)
+      if (params.st) keep.county = keep.ck = keep.ct = keep.p = null;
       hash = wagesHash({ ...keep, ...params });
     }
     history.pushState(null, "", hash);
