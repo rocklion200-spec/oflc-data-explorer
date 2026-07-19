@@ -275,12 +275,18 @@ export function WageLevelsChart({ data, valueFmt = fmtUsd }) {
               </text>
             </g>
           ))}
-          {data.map((d, i) => (
-            <text key={d.label} x={x(i)} y={height - 7} textAnchor="middle" fontSize="11"
-              fill={d.missing ? "var(--baseline)" : "var(--text-muted)"}>
-              {d.label}
-            </text>
-          ))}
+          {data.map((d, i) => {
+            // with 20+ wage years the labels overlap: thin them out, keeping
+            // the latest year anchored ("2005–06" needs ~56px at this size)
+            const step = Math.max(1, Math.ceil((data.length * 56) / Math.max(iw, 1)));
+            if ((data.length - 1 - i) % step !== 0) return null;
+            return (
+              <text key={d.label} x={x(i)} y={height - 7} textAnchor="middle" fontSize="11"
+                fill={d.missing ? "var(--baseline)" : "var(--text-muted)"}>
+                {d.label}
+              </text>
+            );
+          })}
           {tip && (
             <line x1={x(tip.i)} x2={x(tip.i)} y1={mT} y2={mT + ih} stroke="var(--baseline)" strokeWidth="1" />
           )}

@@ -346,10 +346,12 @@ async function wageFrom(manifest, name) {
   return `read_parquet('${f}')`;
 }
 
-// Picker indexes, loaded once: ~950 occupations (incl. OFLC's R&D/non-R&D
-// split codes, which the ACWIA table uses exclusively for some roles) and ~5.6k
-// county/town keys with their year coverage (New England switched from
-// town- to county-based areas in 2025, so the two eras have distinct keys).
+// Picker indexes, loaded once: ~1k occupations (incl. OFLC's R&D/non-R&D
+// split codes, which the ACWIA table uses exclusively for some roles) and ~5.7k
+// county/town keys with their year coverage. Places group on county_key, the
+// pipeline's era-stable name (legacy years spell counties differently), shown
+// under their most recent spelling; keys that only exist in one era (e.g. New
+// England towns before the 2025 switch to counties) surface their y0–y1 span.
 let wageIndexCache = null;
 export function loadWageIndex(manifest) {
   if (!wageIndexCache) {
@@ -359,10 +361,11 @@ export function loadWageIndex(manifest) {
       if (!occ || !geo) return null;
       const occs = await query(`SELECT code, title, in_alc, in_edc FROM ${occ}`);
       const places = await query(`
-        SELECT state_ab AS st, any_value(state) AS state, county,
+        SELECT state_ab AS st, arg_max(state, wage_year) AS state,
+               county_key AS key, arg_max(county, wage_year) AS county,
                min(wage_year)::INT AS y0, max(wage_year)::INT AS y1,
                arg_max(area_name, wage_year) AS area_name
-        FROM ${geo} GROUP BY state_ab, county ORDER BY state_ab, county`);
+        FROM ${geo} GROUP BY state_ab, county_key ORDER BY st, county`);
       return { occs, places };
     })();
     wageIndexCache.catch(() => { wageIndexCache = null; }); // allow retry
@@ -370,11 +373,12 @@ export function loadWageIndex(manifest) {
   return wageIndexCache;
 }
 
-// One row per wage year for a (SOC, county, source) pick. Where the SOC
-// bridge folds several old codes into one modern one (only 2021-22), levels
-// are averaged and `codes` names the constituents.
-export function fetchWageTrend(manifest, soc, st, county, source, stale) {
-  return cachedQuery(`wt|${source}|${st}|${county}|${soc}`, async () => {
+// One row per wage year for a (SOC, county, source) pick; countyKey is the
+// era-stable place key, not the display name. Where the SOC bridge folds
+// several old codes into one modern one (pre-2022 wage years), levels are
+// averaged and `codes` names the constituents.
+export function fetchWageTrend(manifest, soc, st, countyKey, source, stale) {
+  return cachedQuery(`wt|${source}|${st}|${countyKey}|${soc}`, async () => {
     const w = await wageFrom(manifest, "wages");
     const g = await wageFrom(manifest, "geo");
     if (!w || !g) return [];
@@ -387,7 +391,7 @@ export function fetchWageTrend(manifest, soc, st, county, source, stale) {
              bool_or(w.annual) AS annual, any_value(w.note) AS note
       FROM ${w} w JOIN ${g} g ON g.wage_year = w.wage_year AND g.area = w.area
       WHERE w.soc_2018 = '${esc(soc)}' AND w.source = '${esc(source)}'
-        AND g.state_ab = '${esc(st)}' AND g.county = '${esc(county)}'
+        AND g.state_ab = '${esc(st)}' AND g.county_key = '${esc(countyKey)}'
       GROUP BY 1 ORDER BY 1`, stale);
   });
 }

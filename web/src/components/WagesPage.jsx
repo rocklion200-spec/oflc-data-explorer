@@ -11,7 +11,7 @@ import { WageLevelsChart, fmtUsd } from "./charts.jsx";
 const SRC_LABELS = { alc: "All industries (OEWS)", edc: "Higher education (ACWIA)" };
 const HOURS_YEAR = 2080;
 
-const spanLabel = (y) => `${y}–${(y + 1) % 100}`;
+const spanLabel = (y) => `${y}–${String((y + 1) % 100).padStart(2, "0")}`;
 
 // view state <-> URL hash: #wages?s=15-1252&sl=…&st=CA&co=Santa Clara County
 export function wagesHash(p = {}) {
@@ -141,17 +141,18 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
   }, [state.st, state.county, index]);
 
   useEffect(() => {
-    if (!state.soc || !state.st || !state.county) { setTrend(null); return; }
+    if (!state.soc || !place) { setTrend(null); return; }
+    if (!place.key) { if (index) setTrend([]); return; } // unknown place in the hash
     const id = ++run.current;
     const stale = () => id !== run.current;
     setBusy(true);
-    fetchWageTrend(manifest, state.soc, state.st, state.county, state.src, stale)
+    fetchWageTrend(manifest, state.soc, place.st, place.key, state.src, stale)
       .then((rows) => { if (!stale()) { setTrend(rows); setBusy(false); } })
       .catch((e) => {
         if (isStale(e)) return;
         if (id === run.current) { onError(String(e)); setBusy(false); }
       });
-  }, [manifest, state.soc, state.st, state.county, state.src]); // eslint-disable-line
+  }, [manifest, state.soc, place, index, state.src]); // eslint-disable-line
 
   const filterOccs = (text) => {
     if (!index) return [];
