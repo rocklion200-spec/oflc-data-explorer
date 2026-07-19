@@ -339,11 +339,14 @@ export function fetchOverviewTop(manifest, name, stale, limit = 12, cond = null)
 
 export const hasWages = (manifest) => !!manifest.wages;
 
+// wages is sharded across several parquets (GitHub's file-size cap); the
+// manifest entry then carries `files` instead of `file`
 async function wageFrom(manifest, name) {
-  const f = manifest.wages?.files?.[name]?.file;
-  if (!f) return null;
-  await registerParquet(f);
-  return `read_parquet('${f}')`;
+  const e = manifest.wages?.files?.[name];
+  const files = e?.files ?? (e?.file ? [e.file] : []);
+  if (!files.length) return null;
+  await Promise.all(files.map(registerParquet));
+  return `read_parquet([${files.map((f) => `'${f}'`).join(", ")}])`;
 }
 
 // Picker indexes, loaded once: ~1k occupations (incl. OFLC's R&D/non-R&D

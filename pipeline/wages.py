@@ -27,7 +27,8 @@ extract, tab-delimited members rewritten as comma CSV):
   oes_soc_occs.csv / soc_2010_directory.csv / Soc.txt  SOC titles
 
 Published files (web/public/data/wages/):
-  wages.parquet  one row per (wage_year, source, area, soc); soc_2018
+  wages-*.parquet  one row per (wage_year, source, area, soc), sharded by
+                 wage-year range to stay under GitHub's 100 MB cap; soc_2018
                  carries the SOC-2018 code (the 2021-22 wage year uses
                  SOC-2010 codes — bridged so trends span the revision;
                  OFLC's hybrid R&D/non-R&D split codes are NOT bridged,
@@ -301,21 +302,36 @@ def publish(con: duckdb.DuckDBPyConnection, years: list[int]) -> None:
 
     entries = {}
 
-    def copy(name: str, sql: str) -> None:
-        out = OUT / f"{name}.parquet"
-        con.execute(f"COPY ({sql}) TO '{out.as_posix()}' "
-                    f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 65536)")
-        rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
-        entries[name] = {"file": f"wages/{out.name}", "rows": rows,
-                         "bytes": out.stat().st_size}
-        print(f"published      wages/{out.name}: {rows:,} rows, "
-              f"{out.stat().st_size / 1e6:.1f} MB")
+    def copy(name: str, sql: str, shards: dict[str, str] | None = None) -> None:
+        """Publish one parquet, or several (GitHub caps files at 100 MB).
+
+        Shard conditions replace the /*shard*/ marker inside the query's own
+        WHERE clause so the trailing ORDER BY (which row-group pruning relies
+        on) stays in effect.
+        """
+        parts = shards or {f"{name}.parquet": ""}
+        rows, size = 0, 0
+        for fname, cond in parts.items():
+            out = OUT / fname
+            q = sql.replace("/*shard*/", f"AND ({cond})" if cond else "")
+            con.execute(f"COPY ({q}) TO '{out.as_posix()}' "
+                        f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 65536)")
+            rows += con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
+            size += out.stat().st_size
+        files = [f"wages/{f}" for f in parts]
+        entries[name] = ({"file": files[0]} if not shards else {"files": files}) \
+            | {"rows": rows, "bytes": size}
+        print(f"published      {', '.join(files)}: {rows:,} rows, "
+              f"{size / 1e6:.1f} MB")
 
     # rows with no figures at all ("No Leveled Wage", "No ACWIA") are noise
     copy("wages", f"""
         SELECT * FROM ({' UNION ALL '.join(wage_parts)})
         WHERE COALESCE(level1, level2, level3, level4, average) IS NOT NULL
-        ORDER BY soc_2018, area, source, wage_year""")
+          /*shard*/
+        ORDER BY soc_2018, area, source, wage_year""",
+        shards={"wages-2005.parquet": "wage_year < 2016",
+                "wages-2016.parquet": "wage_year >= 2016"})
     # a handful of keys (ME unorganized territories, NE towns sharing a name
     # across counties) map to several areas in one year; keep one row per
     # (year, state, county_key) so UI joins stay 1:1
@@ -339,7 +355,7 @@ def publish(con: duckdb.DuckDBPyConnection, years: list[int]) -> None:
                bool_or(w.source = 'alc') AS in_alc,
                bool_or(w.source = 'edc') AS in_edc
         FROM (SELECT DISTINCT soc_2018, source
-              FROM read_parquet('{(OUT / 'wages.parquet').as_posix()}')) w
+              FROM read_parquet('{(OUT / 'wages-*.parquet').as_posix()}')) w
         LEFT JOIN (
           SELECT soc_2018, arg_max(title, wage_year) AS title
           FROM read_parquet('{(OUT / 'occ.parquet').as_posix()}')
