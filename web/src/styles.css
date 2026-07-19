@@ -332,3 +332,21 @@ header.app nav.view-tabs { margin-left: auto; margin-bottom: 0; }
   background: repeating-linear-gradient(90deg, var(--text-muted) 0 4px, transparent 4px 7px);
 }
 .wage-intro p { color: var(--text-secondary); font-size: 13.5px; max-width: 680px; margin: 0; }
+
+/* ---- wage-levels export panel ---- */
+.wage-export { margin-top: 4px; }
+.wage-export .wage-pickers { align-items: start; }
+.wage-export .chips-row { margin-bottom: 8px; }
+.wage-export .wage-controls { margin-bottom: 0; }
+
+/* ---- help page ---- */
+.help { max-width: 860px; }
+.help p, .help li { color: var(--text-secondary); font-size: 13.5px; line-height: 1.55; }
+.help p strong, .help li strong, .help td strong { color: var(--text-primary); }
+.help ul { margin: 8px 0 0; padding-left: 20px; }
+.help li { margin-bottom: 6px; }
+.help li:last-child { margin-bottom: 0; }
+.help code { font-size: 12px; background: var(--hover-wash); padding: 1px 5px; border-radius: 4px; }
+.help-table { margin-bottom: 10px; }
+table.help-table td { white-space: normal; max-width: none; }
+table.help-table td, table.help-table th { vertical-align: top; }

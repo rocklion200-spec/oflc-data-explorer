@@ -5,10 +5,13 @@ import {
   scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
   fetchEntityTop, fetchProgramStats, fetchEntityCount, hasWages,
+  fetchCityCounty, fetchExport,
 } from "./queries.js";
+import { downloadXlsx, exportRowCap } from "./xlsx.js";
 import { WagesPage, wagesHash } from "./components/WagesPage.jsx";
+import { HelpPage } from "./components/HelpPage.jsx";
 import { ProgramTabs, YearRange } from "./components/Filters.jsx";
-import { ResultsTable, loadColumns } from "./components/ResultsTable.jsx";
+import { ResultsTable, loadColumns, COLUMN_LABELS } from "./components/ResultsTable.jsx";
 import { WageDistribution, TopBars, fmtNum, fmtUsd } from "./components/charts.jsx";
 import { SearchHero, Chips } from "./components/SearchHero.jsx";
 import { EntityPage } from "./components/EntityPage.jsx";
@@ -84,6 +87,7 @@ function selToHash(sel) {
   if (sel.loc) {
     p.set("lst", sel.loc.state);
     if (sel.loc.cityKey) p.set("lc", sel.loc.cityKey);
+    if (sel.loc.countyKey) p.set("lck", sel.loc.countyKey);
     p.set("ll", sel.loc.label);
   }
   const s = p.toString();
@@ -98,18 +102,38 @@ function selFromHash() {
   if (p.get("t")) sel.title = { k: p.get("t"), label: p.get("tl") || p.get("t") };
   if (p.get("lst")) sel.loc = {
     state: p.get("lst"), cityKey: p.get("lc") || null,
-    label: p.get("ll") || [p.get("lc"), p.get("lst")].filter(Boolean).join(", "),
+    countyKey: p.get("lck") || null,
+    label: p.get("ll")
+      || [p.get("lc") || p.get("lck"), p.get("lst")].filter(Boolean).join(", "),
   };
   return sel;
+}
+
+// Wage-library place -> case-explorer location selection ("closest match"):
+// county_key joins directly, except pre-2025 New England places, which are
+// towns rather than counties — there the town name doubles as the city.
+const NEW_ENGLAND = ["CT", "MA", "ME", "NH", "RI", "VT"];
+function locFromPlace(place) {
+  if (!place?.key) return null;
+  const label = `${place.county}, ${place.st}`;
+  if (NEW_ENGLAND.includes(place.st) && place.y1 != null && place.y1 < 2025) {
+    const city = place.county
+      .replace(/\s+(town|city|plantation|gore|grant|location|purchase|township)$/i, "")
+      .toUpperCase();
+    return { state: place.st, cityKey: city, countyKey: null, label };
+  }
+  return { state: place.st, cityKey: null, countyKey: place.key, label };
 }
 
 export default function App() {
   const [manifest, setManifest] = useState(null);
   const [error, setError] = useState(null);
-  // two top-level views share the URL hash: the case explorer's drill
-  // selection (#e=…) and the wage-levels lookup (#wages?…)
-  const [view, setView] = useState(() =>
-    window.location.hash.startsWith("#wages") ? "wages" : "cases");
+  // three top-level views share the URL hash: the case explorer's drill
+  // selection (#e=…), the wage-levels lookup (#wages?…) and #help
+  const viewFromHash = () =>
+    window.location.hash.startsWith("#wages") ? "wages"
+      : window.location.hash.startsWith("#help") ? "help" : "cases";
+  const [view, setView] = useState(viewFromHash);
   const lastWagesHash = useRef(null);
   const [program, setProgram] = useState("lca");
   const [selectedYears, setSelectedYears] = useState(null); // null until manifest loads
@@ -152,16 +176,16 @@ export default function App() {
   const fromPop = useRef(false);
   useEffect(() => {
     const onPop = () => {
-      const wages = window.location.hash.startsWith("#wages");
-      setView(wages ? "wages" : "cases");
-      if (wages) lastWagesHash.current = window.location.hash;
-      else { fromPop.current = true; setSel(selFromHash()); }
+      const v = viewFromHash();
+      setView(v);
+      if (v === "wages") lastWagesHash.current = window.location.hash;
+      else if (v === "cases") { fromPop.current = true; setSel(selFromHash()); }
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   useEffect(() => {
-    if (view === "wages") return; // WagesPage owns the hash there
+    if (view !== "cases") return; // WagesPage / HelpPage own the hash there
     if (fromPop.current) { fromPop.current = false; return; }
     const hash = selToHash(sel);
     if (hash !== window.location.hash) {
@@ -175,10 +199,14 @@ export default function App() {
     let hash = lastWagesHash.current || wagesHash();
     if (params) {
       const prev = new URLSearchParams((lastWagesHash.current || "").split("?")[1] || "");
-      hash = wagesHash({
+      const keep = {
         st: prev.get("st"), county: prev.get("co"),
-        src: prev.get("src"), unit: prev.get("u"), ...params,
-      });
+        ck: prev.get("ck"), ct: prev.get("ct"),
+        src: prev.get("src"), unit: prev.get("u"),
+      };
+      // a link that carries its own location replaces the remembered one
+      if (params.st) keep.county = keep.ck = keep.ct = null;
+      hash = wagesHash({ ...keep, ...params });
     }
     history.pushState(null, "", hash);
     setView("wages");
@@ -193,6 +221,34 @@ export default function App() {
       || window.location.pathname + window.location.search);
     if (nextSel) setSel(nextSel);
     setView("cases");
+  };
+  const openHelp = () => {
+    if (window.location.hash.startsWith("#wages")) {
+      lastWagesHash.current = window.location.hash;
+    }
+    history.pushState(null, "", "#help");
+    setView("help");
+  };
+
+  // "Wage levels for this role": carry the location over too — a county
+  // selection maps directly, a city resolves to its modal county
+  const openWagesForRole = async (socBase) => {
+    const params = { soc: socBase, socLabel: sel.soc.label };
+    const l = sel.loc;
+    if (l?.countyKey) { params.st = l.state; params.ck = l.countyKey; }
+    else if (l?.cityKey) {
+      const ck = await fetchCityCounty(manifest, l.state, l.cityKey)
+        .catch(() => null);
+      const ne = NEW_ENGLAND.includes(l.state);
+      if (ck || ne) {
+        params.st = l.state;
+        if (ck) params.ck = ck;
+        // NE cities pre-2025 live in the wage library as towns under their
+        // own name; WagesPage prefers that place when it exists
+        if (ne) params.ct = l.cityKey;
+      }
+    }
+    openWages(params);
   };
 
   const years = useMemo(() => {
@@ -424,6 +480,57 @@ export default function App() {
     return fetchColumnValues(from, where, col, text.trim(), staleFn);
   };
 
+  // Excel download of the matching records: every published column, capped
+  // by a cell budget so the file opens comfortably in Excel / Google Sheets
+  const [exporting, setExporting] = useState(false);
+  const exportRecords = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const from = await scope(manifest, program, selectedYears);
+      if (!from) return;
+      const where = whereClause(debouncedColFilters, sel);
+      const order = sort ? [sort] : defaultOrder(program);
+      const { rows, columns } = await fetchExport(from, where, order, exportRowCap);
+      const selDesc = Object.entries(sel).filter(([, v]) => v)
+        .map(([d, v]) => `${d}: ${v.label}`).join(" · ");
+      const filterDesc = Object.entries(debouncedColFilters).map(([c, v]) => {
+        const t = typeof v === "string" ? v
+          : [...(v.values || []), ...(v.terms || []).map((x) => `contains "${x}"`),
+             v.text].filter(Boolean).join(", ");
+        return `${COLUMN_LABELS[c] ?? c}: ${t}`;
+      }).join(" · ");
+      const total = stats?.n ?? rows.length;
+      const meta = [
+        ["Dataset", `DOL OFLC disclosure data — ${program.toUpperCase()}`],
+        ["Fiscal years", `FY${Math.min(...selectedYears)}–FY${Math.max(...selectedYears)}`],
+        ["Selection", selDesc || "(none)"],
+        ["Column filters", filterDesc || "(none)"],
+        ["Sort", order.map((s) => `${s.col} ${s.dir}`).join(", ")],
+        ["Matching records", total],
+        ["Records in this file", rows.length],
+        ...(total > rows.length
+          ? [["Note", `Export capped at ${rows.length.toLocaleString()} rows (in the sort order above). Narrow the filters or year range to capture everything.`]]
+          : []),
+        ["Generated", new Date().toISOString()],
+        ["Source", "https://www.dol.gov/agencies/eta/foreign-labor/performance"],
+        ["Exported from", window.location.href],
+      ].map(([k, v]) => ({ k, v }));
+      downloadXlsx(`oflc-${program}-records.xlsx`, [
+        { name: "Records",
+          columns: columns.map((c) => ({ key: c, label: COLUMN_LABELS[c] ?? c })),
+          rows },
+        { name: "About this export",
+          columns: [{ key: "k", label: "Field" }, { key: "v", label: "Value" }],
+          rows: meta },
+      ]);
+    } catch (e) {
+      if (!isStale(e)) setError(String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const switchProgram = (p) => {
     setProgram(p); setColFilters({}); setSort(null);
     setColumns(loadColumns(p)); setSelectedYears(null);
@@ -474,21 +581,44 @@ export default function App() {
   // group keys keep O*NET .XX details the wage library doesn't have
   const socBase = sel.soc && /^\d{2}-\d{4}/.test(sel.soc.k) ? sel.soc.k.slice(0, 7) : null;
 
+  const header = (
+    <header className="app">
+      <h1>OFLC Data Explorer</h1>
+      <span className="sub">U.S. DOL foreign labor certification disclosure data</span>
+      <nav className="tabs view-tabs">
+        <button className={view === "cases" ? "active" : ""}
+          onClick={() => view !== "cases" && openCases()}>Case explorer</button>
+        {hasWages(manifest) && (
+          <button className={view === "wages" ? "active" : ""}
+            onClick={() => view !== "wages" && openWages(null)}>Wage levels</button>
+        )}
+        <button className={view === "help" ? "active" : ""}
+          onClick={() => view !== "help" && openHelp()}>Help</button>
+      </nav>
+    </header>
+  );
+
+  if (view === "help") {
+    return (
+      <>
+        {header}
+        <HelpPage manifest={manifest} />
+      </>
+    );
+  }
+
   if (view === "wages") {
     return (
       <>
-        <header className="app">
-          <h1>OFLC Data Explorer</h1>
-          <span className="sub">U.S. DOL foreign labor certification disclosure data</span>
-          <nav className="tabs view-tabs">
-            <button onClick={() => openCases()}>Case explorer</button>
-            <button className="active">Wage levels</button>
-          </nav>
-        </header>
+        {header}
         {error && <div className="status-line"><span className="error">{error}</span></div>}
         <WagesPage manifest={manifest} onError={setError}
-          onOpenCases={(code, label) =>
-            openCases({ ...EMPTY_SEL, soc: { k: code, label: label || code } })} />
+          onOpenCases={(occ, label, place) =>
+            openCases({
+              ...EMPTY_SEL,
+              soc: { k: occ.group_code || occ.code, label: label || occ.code },
+              loc: locFromPlace(place),
+            })} />
         <footer className="app">
           Source: <a href="https://flag.dol.gov/wage-data/wage-data-downloads" target="_blank" rel="noreferrer">
           OFLC wage data downloads</a> (OEWS survey based). Each wage year is effective July through
@@ -501,16 +631,7 @@ export default function App() {
 
   return (
     <>
-      <header className="app">
-        <h1>OFLC Data Explorer</h1>
-        <span className="sub">U.S. DOL foreign labor certification disclosure data</span>
-        {hasWages(manifest) && (
-          <nav className="tabs view-tabs">
-            <button className="active">Case explorer</button>
-            <button onClick={() => openWages(null)}>Wage levels</button>
-          </nav>
-        )}
-      </header>
+      {header}
 
       {searchable && (
         <SearchHero
@@ -520,8 +641,7 @@ export default function App() {
       <div className="chips-row">
         <Chips sel={sel} onRemove={removeSel} onClear={() => setSel(EMPTY_SEL)} />
         {socBase && hasWages(manifest) && (
-          <button className="linkish" onClick={() =>
-            openWages({ soc: socBase, socLabel: sel.soc.label })}>
+          <button className="linkish" onClick={() => openWagesForRole(socBase)}>
             Wage levels for this role →
           </button>
         )}
@@ -578,7 +698,8 @@ export default function App() {
         onPage={setPage} sort={sort ?? DEFAULT_SORT} onSort={setSort}
         columns={columns} onColumns={setColumns}
         colFilters={colFilters} onColFilters={setColFilters}
-        fetchColValues={fetchColValues} />
+        fetchColValues={fetchColValues}
+        onExport={exportRecords} exporting={exporting} />
 
       <footer className="app">
         Source: <a href="https://www.dol.gov/agencies/eta/foreign-labor/performance" target="_blank" rel="noreferrer">

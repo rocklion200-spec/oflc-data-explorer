@@ -3,6 +3,8 @@ import { COLUMN_TYPES } from "../queries.js";
 import { fmtNum, fmtUsd } from "./charts.jsx";
 
 const LABELS = {
+  program: "Program", pw_unit: "PW unit", pwd_number: "PWD number",
+  employer_postal_code: "Employer ZIP", county_key: "County group",
   employer_name: "Employer name", soc_title: "SOC title", job_title: "Job title",
   worksite_city: "Worksite city", worksite_state: "State",
   worksite_address: "Worksite address",
@@ -18,6 +20,9 @@ const LABELS = {
   end_date: "End date", fiscal_year: "Fiscal year",
   employer_group: "Employer group", soc_group: "Role group", title_group: "Title group",
 };
+
+// full label map, shared with the Excel export (which carries ALL columns)
+export const COLUMN_LABELS = LABELS;
 
 const DEFAULT_VISIBLE = {
   lca: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
@@ -249,7 +254,7 @@ function ColumnManager({ program, columns, onColumns, onClose }) {
 }
 
 export function ResultsTable({ program, rows, total, page, pageSize, onPage, sort, onSort,
-  columns, onColumns, colFilters, onColFilters, fetchColValues }) {
+  columns, onColumns, colFilters, onColFilters, fetchColValues, onExport, exporting }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const [managing, setManaging] = useState(false);
   const dragCol = useRef(null);
@@ -269,6 +274,12 @@ export function ResultsTable({ program, rows, total, page, pageSize, onPage, sor
         <div className="panel-tools">
           {hasFilters && (
             <button className="linkish" onClick={() => onColFilters({})}>Clear column filters</button>
+          )}
+          {onExport && (
+            <button className="tool-btn" disabled={exporting} onClick={onExport}
+              title="Download the matching records as an Excel file — every column, not just the ones shown (capped at 50,000 rows)">
+              {exporting ? "Preparing…" : "⬇ Excel"}
+            </button>
           )}
           <button className="tool-btn" onClick={() => setManaging((m) => !m)}>Columns ▾</button>
           {managing && (

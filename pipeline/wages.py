@@ -349,19 +349,24 @@ def publish(con: duckdb.DuckDBPyConnection, years: list[int]) -> None:
     # occupation picker index: every code that has wage rows, its freshest
     # title (split codes drop out of oes_soc_occs.csv after 2023 but keep
     # publishing wages), and which sources cover it
+    # group_code folds OFLC's hybrid split codes (left alone by soc_bridge)
+    # into the disclosure data's soc_group, so "Filings for this occupation"
+    # can cross-link split-code picks to actual filings
     copy("socs", f"""
-        SELECT w.soc_2018 AS code,
-               COALESCE(any_value(t.title), w.soc_2018) AS title,
-               bool_or(w.source = 'alc') AS in_alc,
-               bool_or(w.source = 'edc') AS in_edc
-        FROM (SELECT DISTINCT soc_2018, source
-              FROM read_parquet('{(OUT / 'wages-*.parquet').as_posix()}')) w
-        LEFT JOIN (
-          SELECT soc_2018, arg_max(title, wage_year) AS title
-          FROM read_parquet('{(OUT / 'occ.parquet').as_posix()}')
+        SELECT *, {groups.soc_group('code')} AS group_code FROM (
+          SELECT w.soc_2018 AS code,
+                 COALESCE(any_value(t.title), w.soc_2018) AS title,
+                 bool_or(w.source = 'alc') AS in_alc,
+                 bool_or(w.source = 'edc') AS in_edc
+          FROM (SELECT DISTINCT soc_2018, source
+                FROM read_parquet('{(OUT / 'wages-*.parquet').as_posix()}')) w
+          LEFT JOIN (
+            SELECT soc_2018, arg_max(title, wage_year) AS title
+            FROM read_parquet('{(OUT / 'occ.parquet').as_posix()}')
+            GROUP BY 1
+          ) t ON t.soc_2018 = w.soc_2018
           GROUP BY 1
-        ) t ON t.soc_2018 = w.soc_2018
-        GROUP BY 1 ORDER BY 1""")
+        ) ORDER BY 1""")
 
     manifest = json.loads(DATASETS.read_text()) if DATASETS.exists() else {}
     manifest["wages"] = {"years": years, "files": entries}

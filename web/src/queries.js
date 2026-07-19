@@ -86,7 +86,9 @@ function columnPredicate(col, raw) {
   return `${col} ILIKE '%${esc(v)}%'`;
 }
 
-// Exact-match predicates for drill-down selections (group chips).
+// Exact-match predicates for drill-down selections (group chips). A location
+// can pin a city, or a whole county via the pipeline's county_key column
+// (each city's filings carry its modal county, era-normalized).
 export function selClause(sel = {}) {
   const w = [];
   if (sel.employer) w.push(`employer_group = '${esc(sel.employer.k)}'`);
@@ -95,6 +97,7 @@ export function selClause(sel = {}) {
   if (sel.loc) {
     w.push(`worksite_state = '${esc(sel.loc.state)}'`);
     if (sel.loc.cityKey) w.push(`upper(trim(worksite_city)) = '${esc(sel.loc.cityKey)}'`);
+    if (sel.loc.countyKey) w.push(`county_key = '${esc(sel.loc.countyKey)}'`);
   }
   return w;
 }
@@ -317,6 +320,37 @@ async function fetchEntityTopLive(manifest, cube, key, stale, limit) {
     FROM ${from} WHERE k = '${esc(key)}' ORDER BY n DESC LIMIT ${limit}`, stale);
 }
 
+// City -> its modal county key (the pipeline's agg/city_county file), used
+// to carry a city selection over to the wage library's county picker.
+export async function fetchCityCounty(manifest, state, cityKey, stale) {
+  const from = await aggFrom(manifest, "city_county");
+  if (!from) return null;
+  const [r] = await query(`
+    SELECT county_key FROM ${from}
+    WHERE state = '${esc(state)}' AND city_key = '${esc(cityKey)}'`, stale);
+  return r?.county_key ?? null;
+}
+
+// Full-width export of the current selection: every published column (not
+// just the ones shown in the table), dates rendered as ISO strings. The
+// row cap keeps the resulting .xlsx openable in Excel / Google Sheets.
+export async function fetchExport(from, where, order, cap, stale) {
+  const by = order
+    .map((s) => `${s.col} ${s.dir === "asc" ? "ASC" : "DESC"} NULLS LAST`)
+    .join(", ");
+  const cols = await query(`DESCRIBE SELECT * FROM ${from} LIMIT 0`, stale);
+  const limit = typeof cap === "function" ? cap(cols.length) : cap;
+  const dates = cols.filter((c) => c.column_type === "DATE")
+    .map((c) => c.column_name);
+  const replace = dates.length
+    ? `REPLACE (${dates.map((c) => `strftime(${c}, '%Y-%m-%d') AS ${c}`).join(", ")})`
+    : "";
+  const rows = await query(`
+    SELECT * ${replace} FROM ${from} ${where}
+    ORDER BY ${by} LIMIT ${limit}`, stale, "bulk");
+  return { rows, columns: cols.map((c) => c.column_name) };
+}
+
 // Landing-page overview: first rows of the ordered *_top files (already
 // sorted by n DESC, so LIMIT stops after the first row group). `cond` lets
 // the locations chart keep to cities (statewide rollups would crowd it out).
@@ -362,7 +396,10 @@ export function loadWageIndex(manifest) {
       const occ = await wageFrom(manifest, "socs");
       const geo = await wageFrom(manifest, "geo");
       if (!occ || !geo) return null;
-      const occs = await query(`SELECT code, title, in_alc, in_edc FROM ${occ}`);
+      // SELECT * so the optional group_code column (the occupation's
+      // disclosure-data soc_group, for cross-linking to filings) comes
+      // along when the published file has it
+      const occs = await query(`SELECT * FROM ${occ}`);
       const places = await query(`
         SELECT state_ab AS st, arg_max(state, wage_year) AS state,
                county_key AS key, arg_max(county, wage_year) AS county,
@@ -397,6 +434,29 @@ export function fetchWageTrend(manifest, soc, st, countyKey, source, stale) {
         AND g.state_ab = '${esc(st)}' AND g.county_key = '${esc(countyKey)}'
       GROUP BY 1 ORDER BY 1`, stale);
   });
+}
+
+// Wage-library export: raw published rows (no cross-code averaging — the
+// original soc_code column says which vintage's code each row carried) for
+// any set of occupations and counties under one source table.
+export async function fetchWageRowsMulti(manifest, socs, places, source, stale) {
+  if (!socs.length || !places.length) return [];
+  const w = await wageFrom(manifest, "wages");
+  const g = await wageFrom(manifest, "geo");
+  if (!w || !g) return [];
+  const socList = socs.map((s) => `'${esc(s)}'`).join(", ");
+  const placeList = places
+    .map((p) => `'${esc(`${p.st}|${p.key}`)}'`).join(", ");
+  return query(`
+    SELECT w.wage_year, w.source, w.soc_2018, w.soc_code,
+           g.state_ab, g.county, g.area_name,
+           w.level1, w.level2, w.level3, w.level4, w.average,
+           w.annual, w.note
+    FROM ${w} w JOIN ${g} g ON g.wage_year = w.wage_year AND g.area = w.area
+    WHERE w.source = '${esc(source)}' AND w.soc_2018 IN (${socList})
+      AND g.state_ab || '|' || g.county_key IN (${placeList})
+    ORDER BY w.soc_2018, g.state_ab, g.county, w.wage_year, w.soc_code`,
+    stale, "bulk");
 }
 
 // Row-level top-N for the combined drill view (2+ selections). All requested

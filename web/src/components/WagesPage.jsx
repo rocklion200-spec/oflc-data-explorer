@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isStale } from "../db.js";
-import { loadWageIndex, fetchWageTrend } from "../queries.js";
+import { loadWageIndex, fetchWageTrend, fetchWageRowsMulti } from "../queries.js";
+import { downloadXlsx } from "../xlsx.js";
 import { WageLevelsChart, fmtUsd } from "./charts.jsx";
 
 // The wage-levels view: pick an occupation and a county once, see every wage
@@ -14,12 +15,17 @@ const HOURS_YEAR = 2080;
 const spanLabel = (y) => `${y}–${String((y + 1) % 100).padStart(2, "0")}`;
 
 // view state <-> URL hash: #wages?s=15-1252&sl=…&st=CA&co=Santa Clara County
+// ck is the era-stable county key (used by cross-links from the case
+// explorer); ct is a raw city name fallback for pre-2025 New England, whose
+// wage areas are towns rather than counties.
 export function wagesHash(p = {}) {
   const q = new URLSearchParams();
   if (p.soc) q.set("s", p.soc);
   if (p.socLabel) q.set("sl", p.socLabel);
   if (p.st) q.set("st", p.st);
   if (p.county) q.set("co", p.county);
+  if (p.ck) q.set("ck", p.ck);
+  if (p.ct) q.set("ct", p.ct);
   if (p.src && p.src !== "alc") q.set("src", p.src);
   if (p.unit && p.unit !== "annual") q.set("u", p.unit);
   const s = q.toString();
@@ -32,6 +38,7 @@ function wagesFromHash() {
   return {
     soc: q.get("s"), socLabel: q.get("sl") || q.get("s"),
     st: q.get("st"), county: q.get("co"),
+    ck: q.get("ck"), ct: q.get("ct"),
     src: q.get("src") || "alc", unit: q.get("u") || "annual",
   };
 }
@@ -97,6 +104,150 @@ function Combo({ placeholder, value, filter, render, onPick, onClear }) {
 
 const norm = (s) => s.toLowerCase();
 
+const MAX_PICKS = 25;
+const HOURLY_TO_ANNUAL = (v, annual) =>
+  v == null ? null : Math.round(annual ? v : v * HOURS_YEAR);
+
+// Spreadsheet download of wage levels for ANY set of occupations × counties
+// (the chart above only shows one pair at a time). Rows are the raw published
+// values plus annualized columns; one row per wage year, occupation, county.
+function WageExport({ manifest, index, src, initSoc, initPlace, filterOccs, filterPlaces, onError }) {
+  const [open, setOpen] = useState(false);
+  const [socs, setSocs] = useState([]);
+  const [places, setPlaces] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const show = () => {
+    if (!open) {
+      // seed with whatever is currently charted
+      if (!socs.length && initSoc) setSocs([initSoc]);
+      if (!places.length && initPlace?.key) setPlaces([initPlace]);
+    }
+    setOpen(!open);
+  };
+  const addSoc = (o) => setSocs((xs) =>
+    xs.length < MAX_PICKS && !xs.some((x) => x.code === o.code) ? [...xs, o] : xs);
+  const addPlace = (p) => setPlaces((xs) =>
+    xs.length < MAX_PICKS && !xs.some((x) => x.st === p.st && x.key === p.key)
+      ? [...xs, p] : xs);
+
+  const doExport = async () => {
+    if (busy || !socs.length || !places.length) return;
+    setBusy(true);
+    try {
+      const rows = await fetchWageRowsMulti(
+        manifest, socs.map((s) => s.code), places, src);
+      const titles = new Map(index.occs.map((o) => [o.code, o.title]));
+      const data = rows.map((r) => ({
+        wage_year: spanLabel(r.wage_year),
+        state: r.state_ab, county: r.county, area: r.area_name,
+        soc: r.soc_2018, occupation: titles.get(r.soc_2018) ?? r.soc_2018,
+        soc_in_file: r.soc_code,
+        basis: r.annual ? "Annual" : "Hourly",
+        level1: r.level1, level2: r.level2, level3: r.level3, level4: r.level4,
+        average: r.average,
+        a1: HOURLY_TO_ANNUAL(r.level1, r.annual),
+        a2: HOURLY_TO_ANNUAL(r.level2, r.annual),
+        a3: HOURLY_TO_ANNUAL(r.level3, r.annual),
+        a4: HOURLY_TO_ANNUAL(r.level4, r.annual),
+        aavg: HOURLY_TO_ANNUAL(r.average, r.annual),
+        note: r.note,
+      }));
+      const meta = [
+        ["Dataset", `OFLC wage library — ${SRC_LABELS[src]}`],
+        ["Occupations", socs.map((s) => `${s.title} (${s.code})`).join("; ")],
+        ["Counties", places.map((p) => `${p.county}, ${p.st}`).join("; ")],
+        ["Rows", data.length],
+        ["Notes", `Wage years run July–June. Levels are as published (see Basis); annualized columns convert hourly figures at ${HOURS_YEAR.toLocaleString()} hours/year. Missing (occupation, county, year) combinations have no published wage.`],
+        ["Generated", new Date().toISOString()],
+        ["Source", "https://flag.dol.gov/wage-data/wage-data-downloads"],
+        ["Exported from", window.location.href.split("#")[0] + "#wages"],
+      ].map(([k, v]) => ({ k, v }));
+      downloadXlsx("oflc-wage-levels.xlsx", [
+        { name: "Wage levels",
+          columns: [
+            { key: "wage_year", label: "Wage year" }, { key: "state", label: "State" },
+            { key: "county", label: "County" }, { key: "area", label: "Wage area" },
+            { key: "soc", label: "SOC (2018)" }, { key: "occupation", label: "Occupation" },
+            { key: "soc_in_file", label: "SOC in source file" }, { key: "basis", label: "Basis" },
+            { key: "level1", label: "Level 1" }, { key: "level2", label: "Level 2" },
+            { key: "level3", label: "Level 3" }, { key: "level4", label: "Level 4" },
+            { key: "average", label: "Average" },
+            { key: "a1", label: "Level 1 (annualized)" }, { key: "a2", label: "Level 2 (annualized)" },
+            { key: "a3", label: "Level 3 (annualized)" }, { key: "a4", label: "Level 4 (annualized)" },
+            { key: "aavg", label: "Average (annualized)" }, { key: "note", label: "Note" },
+          ],
+          rows: data },
+        { name: "About this export",
+          columns: [{ key: "k", label: "Field" }, { key: "v", label: "Value" }],
+          rows: meta },
+      ]);
+    } catch (e) {
+      if (!isStale(e)) onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button className="tool-btn" onClick={show}>
+        {open ? "Close download ✕" : "⬇ Spreadsheet"}
+      </button>
+      {open && (
+        <div className="panel wage-export">
+          <h2>Download wage levels
+            <span className="scope-note">
+              {SRC_LABELS[src]} · all wage years · up to {MAX_PICKS} occupations × {MAX_PICKS} counties
+            </span>
+          </h2>
+          <div className="wage-pickers">
+            <div>
+              <div className="chips-row">
+                {socs.map((o) => (
+                  <span className="chip" key={o.code}>{o.title} ({o.code})
+                    <button aria-label="Remove" onClick={() =>
+                      setSocs((xs) => xs.filter((x) => x.code !== o.code))}>×</button>
+                  </span>
+                ))}
+              </div>
+              <Combo placeholder="Add an occupation…" value={null}
+                filter={filterOccs} onPick={addSoc}
+                render={(o) => <span className="v">{o.title} <span className="code">{o.code}</span></span>} />
+            </div>
+            <div>
+              <div className="chips-row">
+                {places.map((p) => (
+                  <span className="chip" key={`${p.st}|${p.key}`}>{p.county}, {p.st}
+                    <button aria-label="Remove" onClick={() =>
+                      setPlaces((xs) => xs.filter((x) => !(x.st === p.st && x.key === p.key)))}>×</button>
+                  </span>
+                ))}
+              </div>
+              <Combo placeholder="Add a county…" value={null}
+                filter={filterPlaces} onPick={addPlace}
+                render={(p) => (
+                  <span className="v">{p.county}, {p.st}
+                    <span className="code"> {p.area_name}</span>
+                  </span>
+                )} />
+            </div>
+          </div>
+          <div className="wage-controls">
+            <button className="tool-btn" disabled={busy || !socs.length || !places.length}
+              onClick={doExport}>
+              {busy ? "Preparing…" : "Download .xlsx"}
+            </button>
+            <span className="chart-note">
+              One row per wage year, occupation and county — as published plus annualized values.
+            </span>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function WagesPage({ manifest, onError, onOpenCases }) {
   const [state, setState] = useState(wagesFromHash);
   const [index, setIndex] = useState(null);
@@ -135,10 +286,20 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
       ?? (state.socLabel !== state.soc ? state.socLabel : state.soc);
   }, [state.soc, state.socLabel, index]);
   const place = useMemo(() => {
-    if (!state.st || !state.county) return null;
-    return index?.places.find((p) => p.st === state.st && p.county === state.county)
-      ?? { st: state.st, county: state.county, area_name: null };
-  }, [state.st, state.county, index]);
+    if (!state.st || (!state.county && !state.ck && !state.ct)) return null;
+    const ps = index?.places;
+    if (!ps) {
+      return state.county ? { st: state.st, county: state.county, area_name: null } : null;
+    }
+    const squash = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const inSt = (f) => ps.find((p) => p.st === state.st && f(p));
+    // town-name match first: for NE cities the town key carries the long
+    // 2005–2024 series, the county key only 2025+
+    return (state.ct && inSt((p) => p.key === squash(state.ct)))
+      || (state.ck && inSt((p) => p.key === state.ck))
+      || (state.county && inSt((p) => p.county === state.county))
+      || (state.county ? { st: state.st, county: state.county, area_name: null } : null);
+  }, [state.st, state.county, state.ck, state.ct, index]);
 
   useEffect(() => {
     if (!state.soc || !place) { setTrend(null); return; }
@@ -229,8 +390,8 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
               <span className="code"> {p.area_name}{coverage(p) ? ` · ${coverage(p)}` : ""}</span>
             </span>
           </>)}
-          onPick={(p) => setState((s) => ({ ...s, st: p.st, county: p.county }))}
-          onClear={() => setState((s) => ({ ...s, st: null, county: null }))} />
+          onPick={(p) => setState((s) => ({ ...s, st: p.st, county: p.county, ck: p.key, ct: null }))}
+          onClear={() => setState((s) => ({ ...s, st: null, county: null, ck: null, ct: null }))} />
       </div>
 
       <div className="wage-controls">
@@ -249,11 +410,21 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
           ))}
         </div>
         {state.soc && (
-          <button className="linkish" onClick={() => onOpenCases(state.soc, socTitle)}>
-            Filings for this occupation →
+          <button className="linkish" onClick={() => onOpenCases(
+            index?.occs.find((o) => o.code === state.soc) ?? { code: state.soc },
+            socTitle, place)}>
+            Filings for this occupation{place?.key ? " here" : ""} →
           </button>
         )}
       </div>
+
+      {index && (
+        <WageExport manifest={manifest} index={index} src={state.src}
+          initSoc={index.occs.find((o) => o.code === state.soc)}
+          initPlace={place?.key ? place : null}
+          filterOccs={filterOccs} filterPlaces={filterPlaces}
+          onError={onError} />
+      )}
 
       {!ready ? (
         <div className="panel wage-intro">

@@ -33,6 +33,7 @@ import duckdb
 
 import groups
 from download import identify
+from wages import county_key
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
@@ -655,6 +656,85 @@ def stage_all(con: duckdb.DuckDBPyConnection) -> None:
         stage_file(con, path, program, era, have)
 
 
+NEW_ENGLAND_SQL = "('CT','MA','ME','NH','RI','VT')"
+
+
+def build_city_county(con: duckdb.DuckDBPyConnection) -> None:
+    """City -> county maps used to attach a county_key to every filing.
+
+    Several eras (iCERT/EFILE LCA, pre-2024 PERM) have no worksite county
+    column at all, and even where one exists the values are messy (New
+    England eras report towns like "CAMBRIDGE CITY", others counties like
+    "MIDDLESEX", plus outright junk). So, mirroring how employer name
+    variants collapse into one group:
+
+      town_county  New England town -> its county, recovered from the wage
+                   library's legacy geography files ("DUKES (CHILMARK)")
+      city_county  (state, city) -> modal canonical county across all rows
+                   that carry one; the modal value becomes the PRIMARY key
+                   for every row of that city so a city never splits across
+                   county spellings/eras
+
+    Keys use the wage library's era-stable county normalization so a county
+    selection can join disclosure filings to OFLC wage areas.
+    """
+    wage_geo = sorted((STAGE / "wages").glob("wy*/geo.csv"))
+    if wage_geo:
+        geo_files = ", ".join(f"'{p.as_posix()}'" for p in wage_geo)
+        tk = county_key("CountyTownName", "StateAb")
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE town_county AS
+            SELECT state, town_key, county_key FROM (
+              SELECT state, town_key, county_key, row_number() OVER (
+                       PARTITION BY state, town_key ORDER BY count(*) DESC
+                     ) AS rn
+              FROM (
+                SELECT upper(trim(StateAb)) AS state, {tk} AS town_key,
+                       {county_key(
+                         "regexp_extract(CountyTownName, '^([^(]+)[(]', 1)",
+                         "StateAb")} AS county_key
+                FROM read_csv([{geo_files}], all_varchar=true,
+                              union_by_name=true)
+                WHERE CountyTownName LIKE '% (%'
+                  AND upper(trim(StateAb)) IN {NEW_ENGLAND_SQL}
+              ) WHERE county_key <> '' AND town_key <> county_key
+              GROUP BY 1, 2, 3
+            ) WHERE rn = 1
+        """)
+    else:
+        con.execute("""CREATE OR REPLACE TEMP TABLE town_county
+                       (state VARCHAR, town_key VARCHAR, county_key VARCHAR)""")
+
+    staged = [p for prog in ("lca", "perm", "pwd")
+              for p in sorted((STAGE / prog).glob("*.parquet"))]
+    files = ", ".join(f"'{p.as_posix()}'" for p in staged)
+    ck = county_key("worksite_county", "worksite_state")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE city_county AS
+        SELECT state, city_key, county_key FROM (
+          SELECT state, city_key, county_key, row_number() OVER (
+                   PARTITION BY state, city_key ORDER BY count(*) DESC
+                 ) AS rn
+          FROM (
+            SELECT r.state, r.city_key,
+                   COALESCE(tc.county_key, r.ck) AS county_key
+            FROM (
+              SELECT worksite_state AS state, upper(trim(worksite_city)) AS city_key,
+                     nullif({ck}, '') AS ck
+              FROM read_parquet([{files}], union_by_name=true)
+              WHERE worksite_state IS NOT NULL AND worksite_city IS NOT NULL
+            ) r LEFT JOIN town_county tc
+              ON tc.state = r.state AND tc.town_key = r.ck
+            WHERE r.ck IS NOT NULL
+          ) GROUP BY 1, 2, 3
+        ) WHERE rn = 1
+    """)
+    tn = con.execute("SELECT count(*) FROM town_county").fetchone()[0]
+    n = con.execute("SELECT count(*) FROM city_county").fetchone()[0]
+    print(f"city->county   {n:,} (state, city) pairs mapped "
+          f"({tn:,} NE town->county fixes)")
+
+
 def publish(con: duckdb.DuckDBPyConnection) -> None:
     WEB_DATA.mkdir(parents=True, exist_ok=True)
     manifest = {"programs": {}}
@@ -663,6 +743,8 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
         prev = json.loads((WEB_DATA / "datasets.json").read_text())
         if "wages" in prev:
             manifest["wages"] = prev["wages"]
+    build_city_county(con)
+    ck_own = county_key("d.worksite_county", "d.worksite_state")
     for program in ("lca", "perm", "pwd"):
         staged = sorted((STAGE / program).glob("*.parquet"))
         if not staged:
@@ -673,12 +755,14 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
         # the per-FY COPY loop below would otherwise recompute them each pass
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE pub AS
-            SELECT *,
-                   {groups.employer_group("employer_name")} AS employer_group,
-                   {groups.soc_group("soc_code")} AS soc_group,
-                   {groups.title_group("job_title")} AS title_group,
-                   year(COALESCE(decision_date, received_date))
-                   + CASE WHEN month(COALESCE(decision_date, received_date)) >= 10
+            SELECT d.*,
+                   {groups.employer_group("d.employer_name")} AS employer_group,
+                   {groups.soc_group("d.soc_code")} AS soc_group,
+                   {groups.title_group("d.job_title")} AS title_group,
+                   COALESCE(cc.county_key, tc.county_key,
+                            nullif({ck_own}, '')) AS county_key,
+                   year(COALESCE(d.decision_date, d.received_date))
+                   + CASE WHEN month(COALESCE(d.decision_date, d.received_date)) >= 10
                           THEN 1 ELSE 0 END AS fiscal_year
             FROM (
               SELECT * EXCLUDE (source_file)
@@ -689,7 +773,13 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
                 ) AS rn
                 FROM read_parquet([{files}], union_by_name=true)
               ) WHERE rn = 1
-            )
+            ) d
+            LEFT JOIN city_county cc
+              ON cc.state = d.worksite_state
+             AND cc.city_key = upper(trim(d.worksite_city))
+            LEFT JOIN town_county tc
+              ON tc.state = d.worksite_state
+             AND tc.town_key = nullif({ck_own}, '')
             WHERE fiscal_year IS NOT NULL
         """)
         if program == "perm":
@@ -791,7 +881,7 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
         CREATE OR REPLACE TEMP VIEW allpub AS
         SELECT regexp_extract(parse_filename(filename), '^([a-z]+)_fy', 1) AS program,
                fiscal_year, employer_group, soc_group, title_group,
-               worksite_state, worksite_city,
+               worksite_state, worksite_city, county_key,
                upper(trim(worksite_city)) AS city_key, wage_annual,
                (case_status ILIKE 'Certified%' OR
                 case_status ILIKE 'Determination Issued%') AS is_cert,
@@ -802,7 +892,8 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     # Several source years are ALL CAPS, so prefer a mixed-case spelling when
     # one exists (FILTER mixed(...)) before falling back to the overall mode.
     mixed = lambda c: f"(trim({c}) <> upper(trim({c})))"
-    needs_labels = only is None or bool(set(only) - {"locations_top", "program_stats"})
+    needs_labels = only is None or bool(
+        set(only) - {"locations_top", "program_stats", "city_county"})
     if needs_labels:
         build_labels(con, mixed, curated)
 
@@ -870,6 +961,22 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
         ) a LEFT JOIN (VALUES {sn}) sn(code, name) ON sn.code = a.state
         WHERE a.is_state OR a.city_key IS NOT NULL
         ORDER BY a.n DESC"""
+
+    # city -> modal county key (rows already carry the backfilled county_key,
+    # so this is near-unanimous per city); the UI uses it to turn a city
+    # selection into the closest wage-library county when cross-linking
+    specs["city_county"] = """
+        SELECT state, city_key, county_key, n FROM (
+          SELECT worksite_state AS state, city_key, county_key,
+                 count(*)::BIGINT AS n, row_number() OVER (
+                   PARTITION BY worksite_state, city_key ORDER BY count(*) DESC
+                 ) AS rn
+          FROM allpub
+          WHERE worksite_state IS NOT NULL AND city_key IS NOT NULL
+            AND county_key IS NOT NULL
+          GROUP BY 1, 2, 3
+        ) WHERE rn = 1
+        ORDER BY state, city_key"""
 
     # program-level stats: one row per (program, fy) plus the year-range
     # presets the UI offers (all years, last 2, last 5), so the landing page
