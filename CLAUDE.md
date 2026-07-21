@@ -27,11 +27,12 @@ HTTP range requests. No server.
   check `last-modified`) before re-triggering builds.
 - **Pages size limits — two different 1 GBs, don't conflate them:**
   - *Published site* — 1 GB **hard**; exceeding it fails the deploy. This is the
-    binding constraint. The tree is **1,038,992,208 B = 0.968 GiB**, i.e. ~33 MiB
-    of headroom. The limit is binary (2^30), not decimal: at 1.039 decimal GB the
-    site deploys fine, so 1 GB here can only mean GiB. Only shrinking *published
-    bytes* helps — a column/encoding trim, dropping cubes, sharding to a second
-    host. Cube growth is the threat (the fy_lo/fy_hi rebuild alone cost +25 MB).
+    binding constraint. The tree is **803 MiB**, i.e. ~221 MiB of headroom (was
+    ~33 MiB before the 2026-07-20 zstd-22 pass and cube removal). The limit is
+    binary (2^30), not decimal: the site deployed fine at 1.039 decimal GB, so
+    1 GB here can only mean GiB. Only shrinking *published bytes* helps —
+    encoding, dropping cubes, sharding to a second host. Cube growth is the
+    threat (the fy_lo/fy_hi rebuild alone cost +25 MB).
   - *Source repo* — 1 GB **recommended** (soft, no enforcement). History was
     squashed to one orphan commit on 2026-07-20 for this; note GitHub's reported
     repo size does not drop until its own background gc runs, which no API call
@@ -44,6 +45,36 @@ HTTP range requests. No server.
   the cache is still cold anyway.
 - Pages caches `index.html` up to 10 min — verify deploys with a `?cachebuster`
   URL and check the loaded bundle hash, or you'll measure the old code.
+- All Pages project sites for the account share ONE origin
+  (`https://rocklion200-spec.github.io`) — paths aren't part of an origin, so
+  sharding data across more repos never introduces CORS. A *user* site or
+  custom domain would be a different origin (Pages does send
+  `Access-Control-Allow-Origin: *`, so it'd still work, just not for free).
+
+## Per-session bandwidth (measured 2026-07-20)
+
+| Stage | Wire bytes |
+|---|---|
+| Landing page only (no DuckDB boot) | 0.3 MiB |
+| + DuckDB boot on first search/drill | +7.7 MiB |
+| + search index | +10.8 MiB |
+| Each employer drill (3 charts) | ~1.6 MiB |
+| Records table, all years | ~50 MiB |
+
+- The WASM is 33.4 MiB on disk but **7.5 MiB on the wire** (Pages compresses
+  it) and is browser-cached across sessions — don't quote the build-output size
+  as a bandwidth figure.
+- The records table dominates everything; the charts are noise beside it.
+  Pruning works (20/86 row groups for an all-years employer) but it's still
+  ~50 MiB. `employers_top` (10.0 MiB) is the fixed per-session cost and the
+  next target if the 100 GB/month soft limit ever matters.
+- **Measuring this is not possible from the browser tools**: DuckDB-WASM issues
+  its range reads inside a Web Worker, so they appear in neither
+  `performance.getEntriesByType('resource')` (main thread only) nor the CDP
+  network recorder — both come back empty. The parquet figures above are
+  computed from `parquet_metadata` column-chunk sizes over the row groups a
+  query's stats actually match; treat them as per-query upper bounds, since
+  DuckDB's object/metadata caches and cache.js suppress repeats.
 
 ## Commands
 
@@ -57,7 +88,31 @@ python3 pipeline/download.py      # scrape DOL performance page (curl only; pyth
 python3 pipeline/convert.py       # stage xlsx -> parquet, publish to web/public/data/
 python3 pipeline/convert.py --agg-only [names…]  # rebuild just aggregate/cube files (cheap)
 python3 pipeline/wages.py         # wage library from flag.dol.gov + Wayback legacy archives
+python3 pipeline/recompress.py    # re-encode an already-published tree at zstd 22, in place
 ```
+
+Use the repo's `.venv` (`./.venv/bin/python3`) — bare `python3` has no duckdb.
+
+## Compression (zstd level 22)
+
+Every *published* parquet is written at `COMPRESSION_LEVEL 22`, not DuckDB's
+default 3: measured 7–20% smaller across the tree (128 MiB total) for **zero**
+read cost, because zstd decompression speed is independent of compression
+level — a level-22 point query benchmarked marginally *faster* than level 3
+(less I/O). It costs write time only: ~0.3s → ~7.5s for a 60 MB cube.
+Staging parquet deliberately stays at the default — it is never published and
+is re-read repeatedly during a run.
+
+`pipeline/recompress.py` applies this to an already-published tree without a
+re-stage, verifying each file by joining on parquet's physical row index
+(`file_row_number`) and comparing whole-row hashes. Two traps it encodes:
+- A plain `SELECT * FROM file` → `COPY` **does** preserve physical row order,
+  so row-group pruning survives. Don't "verify" this with `string_agg` or
+  `lag() OVER ()` — neither guarantees input order, and both will falsely
+  report scrambling.
+- Table aliases in the verification query must not collide with a column name.
+  The cubes have a column `n`, so aliasing the table `n` makes `hash(n)` hash
+  that column instead of the row, reporting every row as differing.
 
 ## Web app architecture (web/src/)
 
@@ -67,10 +122,11 @@ python3 pipeline/wages.py         # wage library from flag.dol.gov + Wayback leg
   Sets `enable_object_cache` + `parquet_metadata_cache` (critical: parquet
   footers are re-read every query otherwise).
 - `queries.js` — all SQL. Two layers: row-level scans over per-FY parquet, and
-  precomputed **cubes** in `data/agg/` (`*_top` per-dim tops = search corpus,
-  pairwise cubes `emp_soc`/`soc_loc`/…, `program_stats`, summary files with
-  GROUPING SETS rollups). Cube paths only apply when no column filters are
-  active. `datasets.json` carries a `landing` block (top-12s + program stats)
+  precomputed **cubes** in `data/agg/` (`*_top` per-dim tops = search corpus —
+  employers/soc/locations only, see the job-titles note below; pairwise cubes
+  `emp_soc`/`emp_title`/`soc_emp`/`emp_loc`/`soc_loc`, `program_stats`, summary
+  files with GROUPING SETS rollups). Cube paths only apply when no column
+  filters are active. `datasets.json` carries a `landing` block (top-12s + program stats)
   so the home page renders before DuckDB even boots.
 - `cache.js` — localStorage LRU keyed on the datasets.json fingerprint, wraps
   the chart/summary fetchers (`cachedQuery`).
@@ -78,6 +134,17 @@ python3 pipeline/wages.py         # wage library from flag.dol.gov + Wayback leg
   `#help`); selection = chips {employer, soc, title, loc}, added by search
   picks and chart clicks. Top-N charts are cube-backed on home/single-entity,
   row-level (one GROUPING SETS scan) in drill mode.
+- **Job titles are employer-scoped by design — don't "restore" them.** A raw
+  job title means little across firms (every employer spells the same role its
+  own way), so titles are *not* in the search corpus (`ensureSearchTable`) and
+  the Top-job-titles chart appears only once an employer is selected
+  (`topDims`). Consequences, all deliberate:
+  - `titles_top` and `title_emp` are **not published** — nothing reads them.
+    convert.py skips both explicitly. Regenerating them re-adds ~60 MiB of
+    published bytes and ~8 MiB to every session's search-index download.
+  - `ENTITY_CUBES` has no `title` key, so a legacy `#t=` link falls back to a
+    row-level scan. Verified working: header/tiles still come from the `titles`
+    summary cube, which IS still published for exactly that path.
 - `components/WagesPage.jsx` — wage-levels view. Unified search over
   occupations + counties; multi-select up to 8 in ONE dimension (adding to the
   other trims it back to one); single pair → 4-level chart, multi → one level
