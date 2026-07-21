@@ -22,11 +22,26 @@ HTTP range requests. No server.
   the site "slow" for a while after any data publish. App deploys do NOT touch
   the data cache. Don't push the data repo for trivia; batch data changes.
 - Data repo watch-outs: GitHub rejects files >100 MB (wages parquet is sharded
-  for this); the published site is ~967 MB against Pages' 1 GB limit; repo
-  history grows ~1 GB per full republish (consider squashing history if it
-  becomes a problem). Pages build status can report "errored" yet still deploy
-  after an internal retry — verify what's actually live (`curl -r` a parquet
-  footer, check `last-modified`) before re-triggering builds.
+  for this). Pages build status can report "errored" yet still deploy after an
+  internal retry — verify what's actually live (`curl -r` a parquet footer,
+  check `last-modified`) before re-triggering builds.
+- **Pages size limits — two different 1 GBs, don't conflate them:**
+  - *Published site* — 1 GB **hard**; exceeding it fails the deploy. This is the
+    binding constraint. The tree is **1,038,992,208 B = 0.968 GiB**, i.e. ~33 MiB
+    of headroom. The limit is binary (2^30), not decimal: at 1.039 decimal GB the
+    site deploys fine, so 1 GB here can only mean GiB. Only shrinking *published
+    bytes* helps — a column/encoding trim, dropping cubes, sharding to a second
+    host. Cube growth is the threat (the fy_lo/fy_hi rebuild alone cost +25 MB).
+  - *Source repo* — 1 GB **recommended** (soft, no enforcement). History was
+    squashed to one orphan commit on 2026-07-20 for this; note GitHub's reported
+    repo size does not drop until its own background gc runs, which no API call
+    or push triggers.
+  - Squashing history does **nothing** for the published-site limit — git history
+    isn't part of the published artifact. It only ever addressed the soft one.
+  - Also soft: 100 GB/month bandwidth, 10 builds/hour, 10 min deploy timeout.
+- If you do squash again, do it right after a data deploy: the force-push
+  retriggers the Pages build and purges the ~1 GB CDN cache, which is free while
+  the cache is still cold anyway.
 - Pages caches `index.html` up to 10 min — verify deploys with a `?cachebuster`
   URL and check the loaded bundle hash, or you'll measure the old code.
 
