@@ -42,10 +42,12 @@ const TOP_TITLES = {
 // cube files backing the top charts when they can (landing page and single
 // selection); anything else falls back to row-level queries
 const OVERVIEW_FILES = { employer: "employers_top", soc: "soc_top", loc: "locations_top" };
+// no `title` entry: titles are only selectable under an employer, so a
+// title-only selection (an old shared #t= link) is rare enough to serve from
+// a row-level scan rather than ship a ~50 MB cube to serve it.
 const ENTITY_CUBES = {
   employer: { soc: "emp_soc", title: "emp_title", loc: "emp_loc" },
   soc: { employer: "soc_emp", loc: "soc_loc" },
-  title: { employer: "title_emp" },
 };
 // row-level top-N spec per dimension; labelExpr turns group keys into labels
 const ROW_CHARTS = {

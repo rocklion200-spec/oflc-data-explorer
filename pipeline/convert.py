@@ -918,9 +918,12 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
                                       ({key}, program, fy))
             ) a JOIN {lab} l ON l.k = a.k
             ORDER BY a.k, a.program NULLS FIRST, a.fy NULLS FIRST"""
-        specs[f"{name}_top"] = f"""
-            SELECT * FROM read_parquet('{(agg_dir / (name + '.parquet')).as_posix()}')
-            WHERE program IS NULL AND fy IS NULL ORDER BY n DESC"""
+        # no titles_top: the *_top files are the search corpus, and job titles
+        # are deliberately not searchable (see queries.js ensureSearchTable)
+        if name != "titles":
+            specs[f"{name}_top"] = f"""
+                SELECT * FROM read_parquet('{(agg_dir / (name + '.parquet')).as_posix()}')
+                WHERE program IS NULL AND fy IS NULL ORDER BY n DESC"""
     # pairwise drill cubes: all-years all-programs rollups, sorted by lead key
     pair = lambda k1, k2, l1, l2: f"""
         SELECT la.label AS label, lb.label AS label2, a.* FROM (
@@ -932,7 +935,9 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     specs["emp_soc"] = pair("employer_group", "soc_group", "lab_emp", "lab_soc")
     specs["emp_title"] = pair("employer_group", "title_group", "lab_emp", "lab_title")
     specs["soc_emp"] = pair("soc_group", "employer_group", "lab_soc", "lab_emp")
-    specs["title_emp"] = pair("title_group", "employer_group", "lab_title", "lab_emp")
+    # no title_emp (titles -> top employers): a title can no longer be selected
+    # on its own, so nothing reads it. The `titles` summary stays — a legacy
+    # shared #t= link still renders an entity header from it.
     loc = lambda k, l: f"""
         SELECT la.label AS label, a.* FROM (
           SELECT {k} AS k, worksite_state AS state, city_key,
