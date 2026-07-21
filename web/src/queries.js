@@ -217,9 +217,14 @@ let searchReady = null;
 export function ensureSearchTable(manifest) {
   if (!searchReady) {
     searchReady = (async () => {
+      // Job titles are deliberately absent: free-text titles are only
+      // meaningful under an employer (every firm spells the same role its own
+      // way), so they're reachable by drilling into one rather than by search.
+      // Dropping them also keeps titles_top (~13 MB) off the session's
+      // search-index download.
       const parts = [];
       for (const [dim, name] of [["employer", "employers_top"],
-                                 ["soc", "soc_top"], ["title", "titles_top"],
+                                 ["soc", "soc_top"],
                                  ["loc", "locations_top"]]) {
         const from = await aggFrom(manifest, name);
         if (from) parts.push(`SELECT '${dim}' AS dim, k, label, n FROM ${from}`);
@@ -243,8 +248,7 @@ export async function searchGroups(manifest, text, stale, perDim = 5) {
   // (the focus dropdown), keep the canonical section order.
   const dimOrder = t
     ? "dim_n DESC"
-    : `CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1
-       WHEN 'title' THEN 2 ELSE 3 END`;
+    : "CASE dim WHEN 'employer' THEN 0 WHEN 'soc' THEN 1 ELSE 2 END";
   return query(`
     SELECT dim, k, label, n FROM (
       SELECT *, row_number() OVER (PARTITION BY dim ORDER BY n DESC) AS rn,

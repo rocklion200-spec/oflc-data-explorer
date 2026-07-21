@@ -793,7 +793,8 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
             con.execute(f"""
                 COPY (SELECT * EXCLUDE (rn) FROM pub WHERE fiscal_year = {fy}
                       ORDER BY employer_group, soc_group)
-                TO '{out.as_posix()}' (FORMAT parquet, COMPRESSION zstd)
+                TO '{out.as_posix()}' (FORMAT parquet, COMPRESSION zstd,
+                                       COMPRESSION_LEVEL 22)
             """)
             rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
             prog_files.append({"fy": fy, "file": out.name, "rows": rows,
@@ -1027,8 +1028,12 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     entries = {}
     for name, sql in specs.items():
         out = agg_dir / f"{name}.parquet"
+        # level 22 is ~10% smaller than the default 3 and costs nothing to read
+        # (zstd decompression speed is level-independent) — the published site
+        # is close enough to Pages' 1 GiB hard limit that the bytes matter
         con.execute(f"COPY ({sql}) TO '{out.as_posix()}' "
-                    f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 65536)")
+                    f"(FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 22, "
+                    f"ROW_GROUP_SIZE 65536)")
         rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
         entries[name] = {"file": f"agg/{out.name}", "rows": rows,
                          "bytes": out.stat().st_size}

@@ -147,8 +147,11 @@ export default function App() {
     : soleDim && soleDim !== "loc" ? "entity" : "drill";
 
   // top charts show every unselected dimension; job titles only join in once
-  // something is selected (rarely the first thing people filter by)
-  const topDims = DIMS.filter((d) => !sel[d] && (selCount > 0 || d !== "title"));
+  // an EMPLOYER is selected — a raw job title means little across firms (each
+  // spells the same role differently), so it's a drill-down from an employer
+  // rather than something to compare globally. Titles are out of the search
+  // corpus for the same reason, making this the only way to select one.
+  const topDims = DIMS.filter((d) => !sel[d] && (d !== "title" || !!sel.employer));
 
   useEffect(() => {
     loadManifest()

@@ -315,7 +315,8 @@ def publish(con: duckdb.DuckDBPyConnection, years: list[int]) -> None:
             out = OUT / fname
             q = sql.replace("/*shard*/", f"AND ({cond})" if cond else "")
             con.execute(f"COPY ({q}) TO '{out.as_posix()}' "
-                        f"(FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 65536)")
+                        f"(FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 22, "
+                        f"ROW_GROUP_SIZE 65536)")
             rows += con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
             size += out.stat().st_size
         files = [f"wages/{f}" for f in parts]
