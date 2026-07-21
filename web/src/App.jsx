@@ -34,7 +34,11 @@ const defaultOrder = (program) => [
   { col: "decision_date", dir: "desc" },
 ];
 
-const DIMS = ["employer", "soc", "title", "loc"];
+// title goes last: it's the only chart that appears conditionally (once an
+// employer is selected), so it reads as appended rather than shifting the
+// others sideways. Order matters only for chart layout — the one other
+// consumer iterates for side effects.
+const DIMS = ["employer", "soc", "loc", "title"];
 const TOP_TITLES = {
   employer: "Top employers", soc: "Top roles",
   title: "Top job titles", loc: "Top locations",

@@ -88,7 +88,7 @@ export function HelpPage({ manifest }) {
         <h2>How employers, roles and places are grouped</h2>
         <p>
           Raw filings spell things every possible way, so the pipeline adds group columns that the
-          search box, charts and chips use:
+          charts, chips and search box use:
         </p>
         <ul>
           <li><strong>Employer group.</strong> Name variants (&quot;Google Inc.&quot;, &quot;GOOGLE LLC&quot;) are
@@ -99,7 +99,8 @@ export function HelpPage({ manifest }) {
             the 2000/2010/2018 SOC revisions (and older 3-digit codes) into one key, so a role&apos;s
             history spans the renumbering.</li>
           <li><strong>Title group.</strong> Job titles with seniority prefixes and level suffixes stripped
-            (&quot;Sr. Software Engineer II&quot; → &quot;Software Engineer&quot;).</li>
+            (&quot;Sr. Software Engineer II&quot; → &quot;Software Engineer&quot;). Titles are only
+            compared within an employer, since each one names the same job differently.</li>
           <li><strong>County group.</strong> Each worksite city is assigned its county (the most common
             county filed for that city), normalized across eras. Older files have no county column at
             all and New England files used towns — the grouping bridges both, which is what lets a
@@ -148,9 +149,12 @@ export function HelpPage({ manifest }) {
       <div className="panel">
         <h2>Using the explorer</h2>
         <ul>
-          <li><strong>Search</strong> for any employer, occupation, job title or place; picking a result
+          <li><strong>Search</strong> for any employer, occupation or place; picking a result
             adds it as a chip. Chips combine — e.g. an employer plus a county shows that employer&apos;s
             filings there.</li>
+          <li><strong>Job titles</strong> aren&apos;t searchable, because the same role is written a
+            different way at every employer. Select an employer and a <em>Top job titles</em> chart
+            appears alongside the others; click a bar there to add a title chip.</li>
           <li><strong>Click any bar</strong> in the top charts to drill into it; the back button undoes
             steps, and the URL always encodes the current view, so you can share or bookmark it.</li>
           <li><strong>Column filters</strong> sit under each table header. Text columns take a contains
@@ -163,9 +167,11 @@ export function HelpPage({ manifest }) {
             column, capped at 50,000 rows so the file stays openable — narrow the filters or year range
             to get a complete set. The wage levels tab has its own <strong>⬇ Excel</strong>{" "}
             download that can cover many occupations and counties at once.</li>
-          <li><strong>Cross-links.</strong> &quot;Wage levels for this role&quot; jumps from a role chip to
-            the wage library, carrying the selected county (or the selected city&apos;s county) along;
-            &quot;Filings for this occupation&quot; goes the other way.</li>
+          <li><strong>Cross-links.</strong> &quot;Wage levels for this role&quot; jumps from your chips to
+            the wage library. It also works from a location alone, or from both at once
+            (&quot;…for this role &amp; location&quot;), carrying the selected county — or the selected
+            city&apos;s county — along; a statewide pick has no counterpart there, since the wage
+            library is keyed by county. &quot;Filings for this occupation&quot; goes the other way.</li>
           <li><strong>Fiscal years</strong> default to the last two for speed; &quot;All years&quot; is
             fastest when an employer is selected (the data files are organized by employer).</li>
         </ul>

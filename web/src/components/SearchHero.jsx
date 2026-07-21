@@ -62,7 +62,7 @@ export function SearchHero({ search, onPick }) {
   return (
     <div className="hero" ref={boxRef}>
       <input type="search" className="hero-input" autoComplete="off"
-        placeholder="Search an employer, role, job title, or location — e.g. Google, New York"
+        placeholder="Search an employer, role, or location — e.g. Google, New York"
         value={text}
         onChange={(e) => { setText(e.target.value); setOpen(true); load(e.target.value); }}
         onFocus={() => { setOpen(true); load(text, 0); }}
