@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { isStale } from "../db.js";
 import { fetchEntitySummary } from "../queries.js";
-import { MonthlyLine, fmtNum, fmtUsd } from "./charts.jsx";
+import { fmtNum, fmtUsd } from "./charts.jsx";
 
 const PROGRAM_LABELS = { lca: "LCA (H-1B)", perm: "PERM", pwd: "Prevailing Wage" };
 const DIM_TITLE = { employer: "Employer", soc: "Role (SOC)", title: "Job title" };
 
-// Entity page for a single selected group: all years, all programs, entirely
-// served by the precomputed cubes (no row-level scans). The top-N drill
-// charts render between the header and the tiles, passed in as children so
-// they sit right below the search bar and chips.
-export function EntityPage({ manifest, dim, sel, onError, children }) {
+// Entity page for a single selected group: header and tiles cover all years
+// and all programs, served by the precomputed cubes (no row-level scans).
+// The top-N drill charts render between the header and the tiles, passed in
+// as children so they sit right below the search bar and chips; `chart` is
+// the wage-distribution panel every mode shares (scoped, like the records
+// table below it, to the selected program and years).
+export function EntityPage({ manifest, dim, sel, onError, children, chart }) {
   const [summary, setSummary] = useState(null);
   const run = useRef(0);
 
@@ -57,18 +59,7 @@ export function EntityPage({ manifest, dim, sel, onError, children }) {
           <div className="value">{years}</div></div>
       </div>
 
-      <div className="charts">
-        <div className="panel">
-          <h2>Records per fiscal year</h2>
-          <MonthlyLine xLabel="Fiscal year" valueLabel="Records"
-            data={trend.map((d) => ({ month: `FY${d.fy}`, value: d.n }))} />
-        </div>
-        <div className="panel">
-          <h2>Median annual wage per fiscal year</h2>
-          <MonthlyLine xLabel="Fiscal year" valueLabel="Median wage" valueFmt={fmtUsd}
-            data={trend.map((d) => ({ month: `FY${d.fy}`, value: d.median_wage }))} />
-        </div>
-      </div>
+      {chart}
     </>
   );
 }

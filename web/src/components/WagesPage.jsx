@@ -7,7 +7,7 @@ import {
 } from "../queries.js";
 import { downloadXlsx } from "../xlsx.js";
 import {
-  WageLevelsChart, MultiLineChart, TopBars, fmtUsd, fmtNum,
+  WageLevelsChart, MultiLineChart, TopBars, fmtUsd, fmtNum, fmtFyRange,
 } from "./charts.jsx";
 
 // The wage-levels view: pick an occupation and a county once, see every wage
@@ -590,13 +590,15 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
       if (firstOcc) {
         const gk = firstOcc.group_code || firstOcc.code;
         const rows = await fetchEntityTop(manifest, "soc_loc", gk, stale, 40);
-        cities = rows.map((d) => ({ state: d.state, city_key: d.city_key, n: d.n }));
+        cities = rows.map((d) => ({ state: d.state, city_key: d.city_key, n: d.n,
+          fy_lo: d.fy_lo, fy_hi: d.fy_hi }));
         scopeLbl = "occ";
       }
       if (!cities?.length) {
         cities = (manifest.landing?.tops?.loc ?? [])
           .filter((d) => d.city_key)
-          .map((d) => ({ state: d.state, city_key: d.city_key, n: d.n }));
+          .map((d) => ({ state: d.state, city_key: d.city_key, n: d.n,
+            fy_lo: d.fy_lo, fy_hi: d.fy_hi }));
         scopeLbl = "global";
       }
       if (stale()) return;
@@ -617,12 +619,16 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
         const pl = resolve(c.state, c.city_key, ccMap[`${c.state}|${c.city_key}`]);
         if (!pl) continue;
         const k = `${pl.st}|${pl.key}`;
-        const cur = agg.get(k) ?? { place: pl, n: 0 };
+        const cur = agg.get(k) ?? { place: pl, n: 0, fy_lo: null, fy_hi: null };
         cur.n += Number(c.n);
+        // several cities fold into one wage area: keep the widest span
+        if (c.fy_lo != null) cur.fy_lo = Math.min(cur.fy_lo ?? c.fy_lo, c.fy_lo);
+        if (c.fy_hi != null) cur.fy_hi = Math.max(cur.fy_hi ?? c.fy_hi, c.fy_hi);
         agg.set(k, cur);
       }
       const rows = [...agg.values()].sort((a, b) => b.n - a.n).slice(0, 12)
-        .map(({ place, n }) => ({ label: `${place.county}, ${place.st}`, n, place }));
+        .map(({ place, n, fy_lo, fy_hi }) =>
+          ({ label: `${place.county}, ${place.st}`, n, fy_lo, fy_hi, place }));
       setTopPlaces({ scope: scopeLbl, occ: firstOcc, rows });
     })().catch((e) => {
       if (!isStale(e) && id === placesRun.current) onError(String(e));
@@ -720,7 +726,8 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
           </h2>
           {topRoles ? (
             <TopBars extraLabel="Median wage"
-              data={topRoles.rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage, row: r }))}
+              data={topRoles.rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage,
+                years: fmtFyRange(r.fy_lo, r.fy_hi), row: r }))}
               onPick={(d) => addOcc(d.row.occ)} />
           ) : <div className="chart-note">Loading…</div>}
         </div>
@@ -736,7 +743,8 @@ export function WagesPage({ manifest, onError, onOpenCases }) {
           </h2>
           {topPlaces ? (
             <TopBars
-              data={topPlaces.rows.map((r) => ({ label: r.label, value: r.n, row: r }))}
+              data={topPlaces.rows.map((r) => ({ label: r.label, value: r.n,
+                years: fmtFyRange(r.fy_lo, r.fy_hi), row: r }))}
               onPick={(d) => addPlace(d.row.place)} />
           ) : <div className="chart-note">Loading…</div>}
         </div>

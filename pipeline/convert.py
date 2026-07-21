@@ -897,9 +897,13 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
     if needs_labels:
         build_labels(con, mixed, curated)
 
+    # fy_lo/fy_hi give every cube row the fiscal-year span it summarizes, so
+    # the drill charts can say which years a group's filings actually cover
     measures = """count(*)::BIGINT AS n,
                count(*) FILTER (is_cert)::BIGINT AS n_cert,
-               round(median(wage_annual))::BIGINT AS median_wage"""
+               round(median(wage_annual))::BIGINT AS median_wage,
+               min(fiscal_year)::SMALLINT AS fy_lo,
+               max(fiscal_year)::SMALLINT AS fy_hi"""
     specs = {}
     # per-dimension summaries: (key [, program] [, fy]) grains via grouping sets
     for name, key, lab in (("employers", "employer_group", "lab_emp"),
@@ -950,7 +954,7 @@ def publish_aggregates(con: duckdb.DuckDBPyConnection,
                CASE WHEN a.is_state THEN COALESCE(sn.name, a.state) || ' (statewide)'
                     ELSE a.city || ', ' || a.state END AS label,
                a.state, CASE WHEN a.is_state THEN NULL ELSE a.city_key END AS city_key,
-               a.n, a.n_cert, a.median_wage
+               a.n, a.n_cert, a.median_wage, a.fy_lo, a.fy_hi
         FROM (
           SELECT worksite_state AS state, city_key,
                  GROUPING(city_key) = 1 AS is_state,
@@ -1049,8 +1053,8 @@ def build_landing(con: duckdb.DuckDBPyConnection) -> dict:
     for dim, name, cond in (("employer", "employers_top", ""),
                             ("soc", "soc_top", ""),
                             ("loc", "locations_top", "WHERE city_key IS NOT NULL")):
-        cols = ("k, label, state, city_key, n, median_wage" if dim == "loc"
-                else "k, label, n, median_wage")
+        cols = ("k, label, state, city_key, n, median_wage, fy_lo, fy_hi" if dim == "loc"
+                else "k, label, n, median_wage, fy_lo, fy_hi")
         tops[dim] = rows(f"SELECT {cols} FROM '{(agg_dir / (name + '.parquet')).as_posix()}' "
                          f"{cond} LIMIT 12")
     stats = rows(f"SELECT * FROM '{(agg_dir / 'program_stats.parquet').as_posix()}' "

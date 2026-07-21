@@ -34,89 +34,18 @@ const fmtCompact = (v) =>
   : Math.abs(v) >= 1e3 ? `${(v / 1e3).toFixed(Math.abs(v) >= 1e5 ? 0 : 1)}K` : `${Math.round(v)}`;
 export const fmtNum = (v) => (v == null ? "–" : Number(v).toLocaleString("en-US"));
 export const fmtUsd = (v) => (v == null ? "–" : `$${Number(v).toLocaleString("en-US")}`);
+// fiscal-year span of a summarized group, collapsed when it's a single year
+export const fmtFyRange = (lo, hi) =>
+  (lo == null || hi == null ? null : lo === hi ? `FY${lo}` : `FY${lo}–FY${hi}`);
 
 function Tooltip({ tip }) {
   if (!tip) return null;
   return (
     <div className="viz-tooltip" style={{ left: tip.x + 12, top: tip.y + 12 }}>
-      {tip.lines.map(([k, v]) => (
-        <div key={k}><span className="k">{k}</span>{v}</div>
+      {/* keyed by position: several lines legitimately share a blank label */}
+      {tip.lines.map(([k, v], i) => (
+        <div key={i}><span className="k">{k}</span>{v}</div>
       ))}
-    </div>
-  );
-}
-
-// data: [{month:'2025-10', value:n}], single series (no legend needed)
-export function MonthlyLine({ data, valueFmt = fmtNum, valueLabel = "Value", xLabel = "Month" }) {
-  const [ref, width] = useWidth();
-  const [tip, setTip] = useState(null);
-  const height = 200, mL = 44, mR = 14, mT = 10, mB = 24;
-  const iw = width - mL - mR, ih = height - mT - mB;
-  const vals = data.map((d) => d.value ?? 0);
-  const ticks = niceTicks(Math.max(...vals, 1));
-  const yMax = ticks[ticks.length - 1];
-  const x = (i) => mL + (data.length === 1 ? iw / 2 : (i / (data.length - 1)) * iw);
-  const y = (v) => mT + ih - (v / yMax) * ih;
-
-  const onMove = (e) => {
-    if (!data.length) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const i = Math.round(((px - mL) / Math.max(iw, 1)) * (data.length - 1));
-    const c = Math.max(0, Math.min(data.length - 1, i));
-    setTip({
-      x: e.clientX, y: e.clientY, i: c,
-      lines: [[xLabel, data[c].month], [valueLabel, valueFmt(data[c].value)]],
-    });
-  };
-
-  const path = data.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(d.value ?? 0).toFixed(1)}`).join("");
-  const last = data.length - 1;
-  const xLabelEvery = Math.ceil(data.length / Math.max(3, Math.floor(iw / 90)));
-
-  return (
-    <div ref={ref} style={{ position: "relative" }}>
-      {data.length === 0 ? (
-        <div className="chart-note" style={{ minHeight: height - 20 }}>No data for this selection.</div>
-      ) : (
-        <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setTip(null)} role="img">
-          {ticks.map((t) => (
-            <g key={t}>
-              <line x1={mL} x2={width - mR} y1={y(t)} y2={y(t)}
-                stroke={t === 0 ? "var(--baseline)" : "var(--grid)"} strokeWidth="1" />
-              <text x={mL - 6} y={y(t) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
-                {fmtCompact(t)}
-              </text>
-            </g>
-          ))}
-          {data.map((d, i) =>
-            i % xLabelEvery === 0 ? (
-              <text key={d.month} x={x(i)} y={height - 7} textAnchor="middle" fontSize="11" fill="var(--text-muted)">
-                {d.month}
-              </text>
-            ) : null)}
-          {tip && (
-            <line x1={x(tip.i)} x2={x(tip.i)} y1={mT} y2={mT + ih} stroke="var(--baseline)" strokeWidth="1" />
-          )}
-          <path d={path} fill="none" stroke="var(--series-1)" strokeWidth="2"
-            strokeLinejoin="round" strokeLinecap="round" />
-          {tip && data[tip.i] && (
-            <circle cx={x(tip.i)} cy={y(data[tip.i].value ?? 0)} r="4.5"
-              fill="var(--series-1)" stroke="var(--surface-1)" strokeWidth="2" />
-          )}
-          {last >= 0 && (
-            <>
-              <circle cx={x(last)} cy={y(data[last].value ?? 0)} r="4"
-                fill="var(--series-1)" stroke="var(--surface-1)" strokeWidth="2" />
-              <text x={x(last) - 6} y={y(data[last].value ?? 0) - 8} textAnchor="end"
-                fontSize="11.5" fontWeight="600" fill="var(--text-primary)">
-                {valueFmt(data[last].value)}
-              </text>
-            </>
-          )}
-        </svg>
-      )}
-      <Tooltip tip={tip} />
     </div>
   );
 }
@@ -448,7 +377,8 @@ export function MultiLineChart({ data, series, valueFmt = fmtUsd }) {
   );
 }
 
-// data: [{label, value, extra}] horizontal bars, single hue, value at tip.
+// data: [{label, value, extra, years}] horizontal bars, single hue, value at
+// tip; `years` is the span the row's records cover, shown in the tooltip.
 // onPick (optional) makes rows clickable — used for drill-down selection.
 export function TopBars({ data, valueFmt = fmtNum, extraLabel, onPick }) {
   const [ref, width] = useWidth();
@@ -478,6 +408,7 @@ export function TopBars({ data, valueFmt = fmtNum, extraLabel, onPick }) {
                 x: e.clientX, y: e.clientY,
                 lines: [["", d.label], ["Records", fmtNum(d.value)],
                   ...(extraLabel && d.extra != null ? [[extraLabel, fmtUsd(d.extra)]] : []),
+                  ...(d.years ? [["Years", d.years]] : []),
                   ...(onPick ? [["", "Click to drill in"]] : [])],
               })}>
               <rect x="0" y="-2" width={width} height={rowH - 2} fill="transparent" />

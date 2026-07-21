@@ -273,22 +273,6 @@ export function fetchProgramStats(manifest) {
   return programStatsCache;
 }
 
-// Entity-page record count for the table pager, summed from the summary
-// cube's (k, program, fy) rows instead of scanning row-level parquet. Only
-// valid when no column filters are active.
-export function fetchEntityCount(manifest, dim, key, program, years, stale) {
-  const lo = Math.min(...years), hi = Math.max(...years);
-  return cachedQuery(`ec|${dim}|${program}|${lo}-${hi}|${key}`, async () => {
-    const from = await aggFrom(manifest, SUMMARY_FILE[dim]);
-    if (!from) return null;
-    const [r] = await query(`
-      SELECT coalesce(sum(n), 0)::INT AS n FROM ${from}
-      WHERE k = '${esc(key)}' AND program = '${esc(program)}'
-        AND fy BETWEEN ${lo} AND ${hi}`, stale);
-    return r?.n ?? 0;
-  });
-}
-
 // One fetch returns everything the entity page header needs: the all-years
 // all-programs rollup, per-program rollups, and the per-FY trend.
 export function fetchEntitySummary(manifest, dim, key, stale) {
@@ -319,12 +303,13 @@ async function fetchEntityTopLive(manifest, cube, key, stale, limit) {
   if (!from) return [];
   if (cube === "emp_loc" || cube === "soc_loc") {
     return query(`
-      SELECT city || ', ' || state AS label2, state, city, city_key, n, median_wage
+      SELECT city || ', ' || state AS label2, state, city, city_key, n, median_wage,
+             fy_lo, fy_hi
       FROM ${from} WHERE k = '${esc(key)}' AND city_key IS NOT NULL
       ORDER BY n DESC LIMIT ${limit}`, stale);
   }
   return query(`
-    SELECT k2, label2, n, median_wage
+    SELECT k2, label2, n, median_wage, fy_lo, fy_hi
     FROM ${from} WHERE k = '${esc(key)}' ORDER BY n DESC LIMIT ${limit}`, stale);
 }
 
@@ -525,7 +510,8 @@ async function fetchTopGroupsMultiLive(from, where, dims, stale, limit) {
                ${dims.map((d) => `(GROUPING(${d.col}) = 0) AS is_${d.dim}`).join(", ")},
                ${keyCols.join(", ")}, ${labCols.join(", ")},
                count(*)::INT AS n,
-               round(median(wage_annual))::INT AS median_wage
+               round(median(wage_annual))::INT AS median_wage,
+               min(fiscal_year)::INT AS fy_lo, max(fiscal_year)::INT AS fy_hi
         FROM ${from} ${where}
         GROUP BY GROUPING SETS (${sets})
         HAVING ${notNull}
@@ -538,7 +524,7 @@ async function fetchTopGroupsMultiLive(from, where, dims, stale, limit) {
     const d = dims.find((d) => r[`is_${d.dim}`]);
     if (d) out[d.dim].push({
       k: r[`k_${d.dim}`], label: r[`lab_${d.dim}`],
-      n: r.n, median_wage: r.median_wage,
+      n: r.n, median_wage: r.median_wage, fy_lo: r.fy_lo, fy_hi: r.fy_hi,
     });
   }
   return out;

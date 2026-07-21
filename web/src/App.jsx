@@ -4,7 +4,7 @@ import { initCache } from "./cache.js";
 import {
   scope, whereClause, fetchOverview, fetchRows, fetchColumnValues,
   hasAggregates, searchGroups, fetchOverviewTop, fetchTopGroupsMulti,
-  fetchEntityTop, fetchProgramStats, fetchEntityCount, hasWages,
+  fetchEntityTop, fetchProgramStats, hasWages,
   fetchCityCounty, fetchExport, NEW_ENGLAND, locFromPlace,
 } from "./queries.js";
 import { downloadXlsx, exportRowCap } from "./xlsx.js";
@@ -12,7 +12,7 @@ import { WagesPage, wagesHash } from "./components/WagesPage.jsx";
 import { HelpPage } from "./components/HelpPage.jsx";
 import { ProgramTabs, YearRange } from "./components/Filters.jsx";
 import { ResultsTable, loadColumns, COLUMN_LABELS } from "./components/ResultsTable.jsx";
-import { WageDistribution, TopBars, fmtNum, fmtUsd } from "./components/charts.jsx";
+import { WageDistribution, TopBars, fmtNum, fmtUsd, fmtFyRange } from "./components/charts.jsx";
 import { SearchHero, Chips } from "./components/SearchHero.jsx";
 import { EntityPage } from "./components/EntityPage.jsx";
 
@@ -214,10 +214,11 @@ export default function App() {
     setView("help");
   };
 
-  // "Wage levels for this role": carry the location over too — a county
-  // selection maps directly, a city resolves to its modal county
-  const openWagesForRole = async (socBase) => {
-    const params = { soc: socBase, socLabel: sel.soc.label };
+  // "Wage levels for …": carry whichever of the role and the location is
+  // selected — a county selection maps directly, a city resolves to its
+  // modal county
+  const openWagesForSel = async (socBase) => {
+    const params = socBase ? { soc: socBase, socLabel: sel.soc.label } : {};
     const l = sel.loc;
     if (l?.countyKey) { params.st = l.state; params.ck = l.countyKey; }
     else if (l?.cityKey) {
@@ -271,6 +272,7 @@ export default function App() {
   // overview-cube (and landing-JSON) rows share one shape -> chart entry
   const cubeRow = (dim) => (d) => ({
     label: d.label, n: d.n, median_wage: d.median_wage,
+    fy_lo: d.fy_lo, fy_hi: d.fy_hi,
     sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label }
       : { k: d.k, label: d.label },
   });
@@ -312,6 +314,7 @@ export default function App() {
             sel[cubeDim].k, stale, TOP_N_FULL);
           entry = { scope: "cube", full: true, rows: r.map((d) => ({
             label: d.label2, n: d.n, median_wage: d.median_wage,
+            fy_lo: d.fy_lo, fy_hi: d.fy_hi,
             sel: dim === "loc" ? { state: d.state, cityKey: d.city_key, label: d.label2 }
               : { k: d.k2, label: d.label2 },
           })) };
@@ -335,6 +338,7 @@ export default function App() {
         for (const dim of rowDims) {
           const entry = { scope: "rows", full: true, rows: (res[dim] || []).map((d) => ({
             label: d.label ?? d.k, n: d.n, median_wage: d.median_wage,
+            fy_lo: d.fy_lo, fy_hi: d.fy_hi,
             sel: dim === "loc" ? locSelFromKey(d.k, d.label ?? d.k)
               : { k: d.k, label: d.label ?? d.k },
           })) };
@@ -378,9 +382,8 @@ export default function App() {
     (async () => {
       const cubes = hasAggregates(manifest);
       const unfiltered = whereClause(debouncedColFilters, {}) === "";
-      // Cube fast paths (no column filters): the landing page reads tiles and
-      // the wage chart out of the tiny program_stats file, and entity pages
-      // get the table's record count from the summary cube — no row scans.
+      // Cube fast path (no column filters): the landing page reads its tiles
+      // and the wage chart out of the tiny program_stats file — no row scan.
       let cubeWages = null;
       if (unfiltered && cubes && mode === "home"
           && (manifest.landing?.stats || manifest.aggregates.program_stats)) {
@@ -406,21 +409,11 @@ export default function App() {
           setWages(cubeWages);
         }
       }
-      if (unfiltered && cubes && mode === "entity") {
-        const n = await fetchEntityCount(manifest, soleDim, sel[soleDim].k,
-          program, selectedYears, stale);
-        if (stale()) return;
-        if (n != null) {
-          setStats({ n }); setWages([]);
-          setError(null); setAggBusy(false);
-          return;
-        }
-      }
       const from = await scope(manifest, program, selectedYears);
       if (stale()) return;
       if (!from) { setStats(null); setWages([]); setAggBusy(false); return; }
       const where = whereClause(debouncedColFilters, sel);
-      const withWages = mode !== "entity" && !cubeWages;
+      const withWages = !cubeWages;
       const { stats: s, wages: w } = await fetchOverview(from, where, withWages, stale);
       if (stale()) return;
       setStats(s);
@@ -551,7 +544,8 @@ export default function App() {
             {t ? (
               <div className={isExp ? "chart-scroll" : undefined}>
                 <TopBars extraLabel="Median wage"
-                  data={rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage, row: r }))}
+                  data={rows.map((r) => ({ label: r.label, value: r.n, extra: r.median_wage,
+                    years: fmtFyRange(r.fy_lo, r.fy_hi), row: r }))}
                   onPick={(d) => addSel(dim, d.row.sel)} />
               </div>
             ) : <div className="chart-note">Loading…</div>}
@@ -561,9 +555,26 @@ export default function App() {
     </div>
   );
 
+  // the same wage-distribution panel in every mode (entity pages render it
+  // in their own charts slot, below their all-years tiles)
+  const wagePanel = (
+    <div className={`panel${aggBusy ? " updating" : ""}`}>
+      <h2>Annual wage by fiscal year
+        <span className="scope-note">box 25th–75th pct · whiskers 5th–95th · min/max on hover</span>
+      </h2>
+      <WageDistribution data={wages} />
+    </div>
+  );
+
   // link a selected role (and its wage-library counterpart) across views;
   // group keys keep O*NET .XX details the wage library doesn't have
   const socBase = sel.soc && /^\d{2}-\d{4}/.test(sel.soc.k) ? sel.soc.k.slice(0, 7) : null;
+  // the wage library is keyed by county, so a statewide selection has no
+  // counterpart there — only a city or county location can carry over
+  const wageLoc = !!(sel.loc?.countyKey || sel.loc?.cityKey);
+  const wageLinkLabel = socBase && wageLoc ? "Wage levels for this role & location"
+    : socBase ? "Wage levels for this role"
+    : wageLoc ? "Wage levels for this location" : null;
 
   const header = (
     <header className="app">
@@ -624,9 +635,9 @@ export default function App() {
       )}
       <div className="chips-row">
         <Chips sel={sel} onRemove={removeSel} onClear={() => setSel(EMPTY_SEL)} />
-        {socBase && hasWages(manifest) && (
-          <button className="linkish" onClick={() => openWagesForRole(socBase)}>
-            Wage levels for this role →
+        {wageLinkLabel && hasWages(manifest) && (
+          <button className="linkish" onClick={() => openWagesForSel(socBase)}>
+            {wageLinkLabel} →
           </button>
         )}
       </div>
@@ -640,7 +651,8 @@ export default function App() {
       </div>
 
       {mode === "entity" ? (
-        <EntityPage manifest={manifest} dim={soleDim} sel={sel[soleDim]} onError={setError}>
+        <EntityPage manifest={manifest} dim={soleDim} sel={sel[soleDim]} onError={setError}
+          chart={wagePanel}>
           {topCharts}
         </EntityPage>
       ) : topCharts}
@@ -669,12 +681,7 @@ export default function App() {
               <div className="value">{stats && stats.pct_certified != null ? `${stats.pct_certified}%` : "–"}</div></div>
           </div>
 
-          <div className={`panel${aggBusy ? " updating" : ""}`}>
-            <h2>Annual wage by fiscal year
-              <span className="scope-note">box 25th–75th pct · whiskers 5th–95th · min/max on hover</span>
-            </h2>
-            <WageDistribution data={wages} />
-          </div>
+          {wagePanel}
         </>
       )}
 
