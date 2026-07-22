@@ -190,6 +190,10 @@ export function HelpPage({ manifest }) {
           <li>Older files (before FY2020, and especially FY2008–2014) have fewer columns — no worksite
             address, sometimes no county or visa class — so those columns come up blank for old
             records, and derived ones (like county group) are inferred from the city.</li>
+          <li><strong>PW level is blank for every FY2016 LCA.</strong> DOL dropped the wage-level column
+            from that one year&apos;s H-1B disclosure file entirely (FY2015 and FY2017 both have it), so
+            the field was never published rather than simply going unreported case by case. FY2016 PERM
+            and prevailing-wage records are unaffected.</li>
           <li>DOL publishes disclosure files quarterly, so the current quarter is always incomplete.</li>
           <li>Nothing here is legal advice; for filings that matter, consult the official DOL/USCIS
             sources.</li>
