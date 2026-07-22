@@ -7,13 +7,13 @@ const LABELS = {
   employer_postal_code: "Employer ZIP", county_key: "County group",
   employer_name: "Employer name", soc_title: "SOC title", job_title: "Job title",
   worksite_city: "Worksite city", worksite_state: "State",
-  worksite_address: "Worksite address",
   wage_annual: "Wage (annual)", pw_annual: "Prevailing (annual)",
   received_date: "Received", begin_date: "Begin date", wage_to: "Wage to",
   total_workers: "Positions", decision_date: "Decision date",
   case_status: "Status", case_number: "Case number", visa_class: "Visa class",
   soc_code: "SOC code", employer_city: "Employer city",
   employer_state: "Employer state", naics_code: "NAICS",
+  worksite_address: "Worksite address",
   worksite_county: "Worksite county", worksite_postal_code: "Worksite ZIP",
   wage_from: "Wage from", wage_unit: "Wage unit", pw_wage: "Prevailing (raw)",
   pw_wage_level: "PW level", full_time_position: "Full-time",
@@ -26,7 +26,7 @@ export const COLUMN_LABELS = LABELS;
 
 const DEFAULT_VISIBLE = {
   lca: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
-    "worksite_address", "wage_annual", "pw_annual", "pw_wage_level", "received_date",
+    "wage_annual", "pw_annual", "pw_wage_level", "received_date",
     "begin_date", "wage_to", "total_workers", "decision_date", "case_status",
     "case_number", "visa_class", "soc_code"],
   perm: ["employer_name", "soc_title", "job_title", "worksite_city", "worksite_state",
