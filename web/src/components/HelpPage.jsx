@@ -21,7 +21,7 @@ export function HelpPage({ manifest }) {
           of employer applications (the <em>Case explorer</em> tab), and the OFLC <strong>wage
           library</strong> of prevailing wage levels (the <em>Wage levels</em> tab). Everything runs
           in your browser — the tables you filter are queried directly from the published data files,
-          and nothing you do here is sent to a server.
+          and your searches are never sent to or run on a server.
         </p>
       </div>
 
