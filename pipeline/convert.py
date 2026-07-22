@@ -297,11 +297,16 @@ MAPPINGS: dict[tuple[str, str], dict] = {
         "worksite_county": "WORKSITE_COUNTY",
         "worksite_state": st("WORKSITE_STATE"),
         "worksite_postal_code": "WORKSITE_POSTAL_CODE",
-        "wage_from": [n("WAGE_RATE_OF_PAY_FROM"), n("WAGE_RATE_OF_PAY")],
-        "wage_to": n("WAGE_RATE_OF_PAY_TO"),
+        # FY2015 packs the range into one column as "from - to" ("85000.00 -",
+        # "66000 - 70000"); FY2016+ split it, so those never reach the fallback.
+        "wage_from": [n("WAGE_RATE_OF_PAY_FROM"),
+                      n("split_part(WAGE_RATE_OF_PAY, '-', 1)")],
+        "wage_to": [n("WAGE_RATE_OF_PAY_TO"),
+                    n("split_part(WAGE_RATE_OF_PAY, '-', 2)")],
         "wage_unit": "WAGE_UNIT_OF_PAY",
         "wage_annual": [annual(n("WAGE_RATE_OF_PAY_FROM"), "WAGE_UNIT_OF_PAY"),
-                        annual(n("WAGE_RATE_OF_PAY"), "WAGE_UNIT_OF_PAY")],
+                        annual(n("split_part(WAGE_RATE_OF_PAY, '-', 1)"),
+                               "WAGE_UNIT_OF_PAY")],
         "pw_wage": n("PREVAILING_WAGE"),
         "pw_unit": "PW_UNIT_OF_PAY",
         "pw_annual": annual(n("PREVAILING_WAGE"), "PW_UNIT_OF_PAY"),
@@ -745,6 +750,7 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
             manifest["wages"] = prev["wages"]
     build_city_county(con)
     ck_own = county_key("d.worksite_county", "d.worksite_state")
+    thin_wages = []
     for program in ("lca", "perm", "pwd"):
         staged = sorted((STAGE / program).glob("*.parquet"))
         if not staged:
@@ -797,6 +803,16 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
                                        COMPRESSION_LEVEL 22)
             """)
             rows = con.execute(f"SELECT count(*) FROM '{out.as_posix()}'").fetchone()[0]
+            # Every LCA era carries an offered wage on ~every row (>=0.999 for
+            # all of FY2008-FY2026). A year that comes out thin means the era's
+            # wage column matched by name but not by value format -- how FY2015
+            # silently lost its offered wage (one "from - to" string column).
+            if program == "lca" and rows:
+                filled = con.execute(
+                    f"SELECT count(wage_from) FROM '{out.as_posix()}'").fetchone()[0]
+                if filled / rows < 0.95:
+                    thin_wages.append(f"{out.name}: wage_from on "
+                                      f"{filled:,}/{rows:,} rows ({filled/rows:.1%})")
             prog_files.append({"fy": fy, "file": out.name, "rows": rows,
                                "bytes": out.stat().st_size})
             print(f"published      {out.name}: {rows:,} rows, {out.stat().st_size/1e6:.1f} MB")
@@ -806,6 +822,9 @@ def publish(con: duckdb.DuckDBPyConnection) -> None:
     manifest["landing"] = build_landing(con)
     (WEB_DATA / "datasets.json").write_text(json.dumps(manifest, indent=2))
     print(f"wrote          {(WEB_DATA / 'datasets.json').relative_to(ROOT)}")
+    if thin_wages:
+        raise SystemExit("offered wage missing from most rows -- check the "
+                         "era's wage column mapping:\n  " + "\n  ".join(thin_wages))
 
 
 def link_perm_pwd(con: duckdb.DuckDBPyConnection) -> None:
