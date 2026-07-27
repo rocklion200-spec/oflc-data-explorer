@@ -51,30 +51,9 @@ HTTP range requests. No server.
   custom domain would be a different origin (Pages does send
   `Access-Control-Allow-Origin: *`, so it'd still work, just not for free).
 
-## Per-session bandwidth (measured 2026-07-20)
-
-| Stage | Wire bytes |
-|---|---|
-| Landing page only (no DuckDB boot) | 0.3 MiB |
-| + DuckDB boot on first search/drill | +7.7 MiB |
-| + search index | +10.8 MiB |
-| Each employer drill (3 charts) | ~1.6 MiB |
-| Records table, all years | ~50 MiB |
-
-- The WASM is 33.4 MiB on disk but **7.5 MiB on the wire** (Pages compresses
-  it) and is browser-cached across sessions — don't quote the build-output size
-  as a bandwidth figure.
-- The records table dominates everything; the charts are noise beside it.
-  Pruning works (20/86 row groups for an all-years employer) but it's still
-  ~50 MiB. `employers_top` (10.0 MiB) is the fixed per-session cost and the
-  next target if the 100 GB/month soft limit ever matters.
-- **Measuring this is not possible from the browser tools**: DuckDB-WASM issues
-  its range reads inside a Web Worker, so they appear in neither
-  `performance.getEntriesByType('resource')` (main thread only) nor the CDP
-  network recorder — both come back empty. The parquet figures above are
-  computed from `parquet_metadata` column-chunk sizes over the row groups a
-  query's stats actually match; treat them as per-query upper bounds, since
-  DuckDB's object/metadata caches and cache.js suppress repeats.
+Per-session wire bytes (what a visit actually downloads, and why DuckDB-WASM
+range reads can't be measured from the browser tools): load the
+`bandwidth-budget` skill.
 
 ## Commands
 
@@ -93,26 +72,9 @@ python3 pipeline/recompress.py    # re-encode an already-published tree at zstd 
 
 Use the repo's `.venv` (`./.venv/bin/python3`) — bare `python3` has no duckdb.
 
-## Compression (zstd level 22)
-
-Every *published* parquet is written at `COMPRESSION_LEVEL 22`, not DuckDB's
-default 3: measured 7–20% smaller across the tree (128 MiB total) for **zero**
-read cost, because zstd decompression speed is independent of compression
-level — a level-22 point query benchmarked marginally *faster* than level 3
-(less I/O). It costs write time only: ~0.3s → ~7.5s for a 60 MB cube.
-Staging parquet deliberately stays at the default — it is never published and
-is re-read repeatedly during a run.
-
-`pipeline/recompress.py` applies this to an already-published tree without a
-re-stage, verifying each file by joining on parquet's physical row index
-(`file_row_number`) and comparing whole-row hashes. Two traps it encodes:
-- A plain `SELECT * FROM file` → `COPY` **does** preserve physical row order,
-  so row-group pruning survives. Don't "verify" this with `string_agg` or
-  `lag() OVER ()` — neither guarantees input order, and both will falsely
-  report scrambling.
-- Table aliases in the verification query must not collide with a column name.
-  The cubes have a column `n`, so aliasing the table `n` makes `hash(n)` hash
-  that column instead of the row, reporting every row as differing.
+Published parquet is written at zstd `COMPRESSION_LEVEL 22` (free at read time)
+— rationale and the `recompress.py` verification traps are in
+`pipeline/CLAUDE.md`.
 
 ## Web app architecture (web/src/)
 
@@ -163,25 +125,10 @@ re-stage, verifying each file by joining on parquet's physical row index
 
 ## Data quirks (pipeline)
 
-- Dedupe by CASE_NUMBER, never trust file names (LCA quarterly, PERM/PW annual
-  files are cumulative; FY2026_Q2 spans two quarters).
-- Dates arrive as Excel serials under all_varchar: `DATE '1899-12-30' + serial`.
-- Wage plausibility: employers file annual salaries with unit "Hour";
-  `wage_annual` uses a 10k–3M band correction.
-- Form eras are detected from actual file headers, not filenames (PERM old/new
-  coexist in FY2024; 11 legacy schema layouts FY2008–2019; EFILE FY2008-09 has
-  no visa class — H-1B assumed).
-- Groups computed at publish (`pipeline/groups.py`): employer_group (curated
-  families in `employer_families.json` + normalization), soc_group (SOC vintage
-  crosswalk incl. 3-digit DOT), title_group, county_key (era-normalized county;
-  each city assigned its modal county — the raw county field is junk-ridden).
-  Row parquet sorted by (employer_group, soc_group) → row-group pruning, which
-  is why "all years" is only fast when an employer is selected.
-- Wage library: wage years labeled by START year (July–June); 2005 is the hard
-  floor (2-level system before). Pre-2025 New England areas are towns, not
-  counties. 2021-22 files use SOC-2010 codes (bridged); ACWIA publishes only
-  R&D/non-R&D split codes for some roles. Legacy 2005–2020 zips exist only as
-  pinned Wayback captures (flcdatacenter.com is gone).
+Full list in `pipeline/CLAUDE.md` (loads when you touch a pipeline file). The
+one that shapes the *app*: row parquet is sorted by (employer_group, soc_group)
+for row-group pruning, which is why "all years" is only fast when an employer
+is selected.
 
 ## Conventions & gotchas
 
