@@ -7,6 +7,7 @@ and downloads them into data/raw/ (skipping files already present).
 
 Usage:
     python pipeline/download.py --list                 # show what would be downloaded
+    python pipeline/download.py --check                # compare local copies against DOL
     python pipeline/download.py --min-fy 2025          # download FY2025+ files
     python pipeline/download.py --min-fy 2020 --program lca
 """
@@ -16,6 +17,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PERF_URL = "https://www.dol.gov/agencies/eta/foreign-labor/performance"
@@ -92,6 +94,45 @@ def build_manifest(min_fy: int, programs: set[str]) -> list[dict]:
     return entries
 
 
+def head(url: str) -> dict:
+    """Remote content-length / last-modified, via HEAD (no body transferred)."""
+    url = urllib.parse.quote(url, safe=":/%")
+    out = subprocess.run(CURL + ["-I", url], capture_output=True, text=True,
+                         timeout=120).stdout
+    info = {}
+    for line in out.splitlines():
+        k, _, v = line.partition(":")
+        k = k.strip().lower()
+        if k in ("content-length", "last-modified"):
+            info[k] = v.strip()
+    return info
+
+
+def check(entries: list[dict]) -> int:
+    """Report local-vs-DOL state per file. Returns the count needing action."""
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        heads = list(pool.map(lambda e: head(e["url"]), entries))
+
+    stale = 0
+    for e, info in zip(entries, heads):
+        dest = RAW_DIR / e["file"]
+        remote = int(info.get("content-length") or 0)
+        mtime = info.get("last-modified", "?")
+        if not dest.exists() or dest.stat().st_size == 0:
+            state, stale = "MISSING ", stale + 1
+        elif not remote:
+            state = "UNKNOWN "  # no content-length header; can't compare
+        elif dest.stat().st_size != remote:
+            state, stale = "STALE   ", stale + 1
+        else:
+            state = "current "
+        detail = f"DOL {mtime}"
+        if state == "STALE   ":
+            detail += f" — local {dest.stat().st_size} B, DOL {remote} B"
+        print(f"{state} {e['file']:<52} {detail}")
+    return stale
+
+
 def download(entries: list[dict]) -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     for e in entries:
@@ -113,6 +154,8 @@ def main() -> None:
     ap.add_argument("--program", choices=["lca", "perm", "pwd"], action="append",
                     help="repeatable; default: all three")
     ap.add_argument("--list", action="store_true", help="print manifest as JSON and exit")
+    ap.add_argument("--check", action="store_true",
+                    help="compare local files against DOL (HEAD only) and exit")
     args = ap.parse_args()
 
     programs = set(args.program) if args.program else {"lca", "perm", "pwd"}
@@ -121,6 +164,13 @@ def main() -> None:
         json.dump(entries, sys.stdout, indent=2)
         print()
         return
+    if args.check:
+        stale = check(entries)
+        # download() skips any file already on disk, so a STALE one must be
+        # deleted before it will be re-fetched.
+        print(f"\n{stale} of {len(entries)} file(s) need downloading."
+              + (" Delete the STALE ones first." if stale else ""))
+        sys.exit(1 if stale else 0)
     download(entries)
 
 
